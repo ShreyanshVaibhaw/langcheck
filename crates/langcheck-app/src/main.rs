@@ -26,6 +26,9 @@ use langcheck_windows::replace::{
     check_foreground_target, inject_text, ReplacementExecutor, ReplacementPlan, SendInputExecutor,
 };
 use langcheck_windows::startup::{self, SingleInstance};
+use langcheck_windows::tray::{self, TrayHandler, TrayStatus};
+
+use std::path::PathBuf;
 
 use crate::config::CorrectionMode;
 use crate::coordinator::{Coordinator, SharedState};
@@ -36,6 +39,7 @@ const INSTANCE_MUTEX: &str = "Local\\LangCheck-broker-singleton";
 
 fn main() {
     match std::env::args().nth(1).as_deref() {
+        Some("--background") => run_background(),
         Some("--run") => run_autocorrect(),
         Some("--spike") => run_spike(),
         Some("--replace-demo") => run_replace_demo(),
@@ -46,7 +50,8 @@ fn main() {
         _ => println!(
             "LangCheck {} (bootstrap build).\n\
              Modes:\n  \
-             langcheck --run                end-to-end conservative autocorrect (Step 06)\n  \
+             langcheck --background         run in the background with a tray icon (Step 08)\n  \
+             langcheck --run                end-to-end autocorrect in the console (Step 06)\n  \
              langcheck --status             show enabled/mode/start-at-login state\n  \
              langcheck --register-startup   start LangCheck at sign-in (HKCU Run)\n  \
              langcheck --unregister-startup remove start-at-login\n  \
@@ -56,6 +61,87 @@ fn main() {
             env!("CARGO_PKG_VERSION")
         ),
     }
+}
+
+/// A `--background` tray menu handler over the shared kill switch + config file.
+struct BrokerTrayHandler {
+    shared: Arc<SharedState>,
+    config_path: Option<PathBuf>,
+}
+
+impl TrayHandler for BrokerTrayHandler {
+    fn toggle_enabled(&self) {
+        let next = !self.shared.enabled();
+        self.shared.enabled.store(next, Ordering::SeqCst);
+    }
+
+    fn toggle_pause(&self) {
+        let next = !self.shared.paused();
+        self.shared.paused.store(next, Ordering::SeqCst);
+    }
+
+    fn open_settings(&self) {
+        if let Some(path) = &self.config_path {
+            tray::open_path(&path.to_string_lossy());
+        }
+    }
+
+    fn request_exit(&self) {
+        self.shared.shutdown.store(true, Ordering::SeqCst);
+    }
+
+    fn status(&self) -> TrayStatus {
+        TrayStatus {
+            enabled: self.shared.enabled(),
+            paused: self.shared.paused(),
+        }
+    }
+}
+
+/// `--background`: the real broker — observer + focus thread + coordinator + tray
+/// icon. Blocks on the tray message loop until the menu's Exit.
+fn run_background() {
+    let _instance = match SingleInstance::acquire(INSTANCE_MUTEX) {
+        Some(instance) => instance,
+        None => return, // already running; silent in background mode
+    };
+    let config = persistence::load_config();
+    // Ensure config.toml exists so "Open settings" has a file to open.
+    if persistence::config_path().is_some_and(|path| !path.exists()) {
+        let _ = persistence::save_config(&config);
+    }
+
+    let lexicon = match CompactFstLexicon::prototype_en_us() {
+        Ok(lexicon) => lexicon,
+        Err(_) => return,
+    };
+    let shared = Arc::new(SharedState::new());
+    let active = config.enabled && config.mode != CorrectionMode::Off;
+    shared.enabled.store(active, Ordering::SeqCst);
+    let metrics = Arc::new(Metrics::default());
+
+    let (observer, focus_thread, coordinator_thread) =
+        match start_engine(Box::new(lexicon), &shared, &metrics) {
+            Some(parts) => parts,
+            None => return,
+        };
+
+    let handler = Box::new(BrokerTrayHandler {
+        shared: Arc::clone(&shared),
+        config_path: persistence::config_path(),
+    });
+    if let Err(_e) = tray::run_tray(handler) {
+        // No tray (e.g. no shell): fall back to running until externally stopped.
+        while !shared.is_shutdown() {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    shared.shutdown.store(true, Ordering::SeqCst);
+    input::set_capture_allowed(false);
+    observer.stop();
+    let _ = coordinator_thread.join();
+    let _ = focus_thread.join();
 }
 
 /// `--status`: print the persisted settings and start-at-login registration.
@@ -134,46 +220,11 @@ fn run_autocorrect() {
     shared.enabled.store(active, Ordering::SeqCst);
     let metrics = Arc::new(Metrics::default());
 
-    let (tx, rx) = sync_channel(256);
-    let observer = match LowLevelKeyboardObserver::start(tx) {
-        Ok(observer) => observer,
-        Err(e) => {
-            eprintln!("failed to start keyboard observer: {e}");
-            return;
-        }
-    };
-
-    // Focus-safety thread: classify the focused field, publish focus id, gate capture.
-    let focus_shared = Arc::clone(&shared);
-    let focus_thread = std::thread::spawn(move || match FocusInspector::new() {
-        Ok(inspector) => {
-            while !focus_shared.is_shutdown() {
-                let class = inspector.classify_focused();
-                focus_shared
-                    .focus_id
-                    .store(foreground_window_id(), Ordering::SeqCst);
-                // Fail closed: an unknown foreground process is treated as excluded.
-                let process_excluded = langcheck_windows::policy::foreground_process_name()
-                    .is_none_or(|name| langcheck_windows::policy::is_default_excluded(&name));
-                let capture = class.capture_allowed()
-                    && !process_excluded
-                    && focus_shared.enabled()
-                    && !focus_shared.paused();
-                input::set_capture_allowed(capture);
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        }
-        Err(e) => eprintln!("focus inspector unavailable: {e}"),
-    });
-
-    // Coordinator thread: the correction loop.
-    let coordinator_shared = Arc::clone(&shared);
-    let coordinator_metrics = Arc::clone(&metrics);
-    let coordinator_thread = std::thread::spawn(move || {
-        let mut coordinator =
-            Coordinator::new(Box::new(lexicon), coordinator_shared, coordinator_metrics);
-        coordinator.run(&rx);
-    });
+    let (observer, focus_thread, coordinator_thread) =
+        match start_engine(Box::new(lexicon), &shared, &metrics) {
+            Some(parts) => parts,
+            None => return,
+        };
 
     // Stop on Enter.
     let stop_shared = Arc::clone(&shared);
@@ -209,6 +260,61 @@ fn run_autocorrect() {
         "\nstopped. corrections applied={}, cancelled={}",
         s.corrections_applied, s.commits_cancelled
     );
+}
+
+/// Start the observer plus the focus-safety and coordinator threads for `shared`,
+/// returning them so the caller can join on shutdown. Shared by `--run` and
+/// `--background`.
+fn start_engine(
+    lexicon: Box<dyn langcheck_lexicon::LexiconProvider>,
+    shared: &Arc<SharedState>,
+    metrics: &Arc<Metrics>,
+) -> Option<(
+    LowLevelKeyboardObserver,
+    std::thread::JoinHandle<()>,
+    std::thread::JoinHandle<()>,
+)> {
+    let (tx, rx) = sync_channel(256);
+    let observer = match LowLevelKeyboardObserver::start(tx) {
+        Ok(observer) => observer,
+        Err(e) => {
+            eprintln!("failed to start keyboard observer: {e}");
+            return None;
+        }
+    };
+
+    // Focus-safety thread: classify the focused field, publish focus id, gate capture.
+    let focus_shared = Arc::clone(shared);
+    let focus_thread = std::thread::spawn(move || match FocusInspector::new() {
+        Ok(inspector) => {
+            while !focus_shared.is_shutdown() {
+                let class = inspector.classify_focused();
+                focus_shared
+                    .focus_id
+                    .store(foreground_window_id(), Ordering::SeqCst);
+                // Fail closed: an unknown foreground process is treated as excluded.
+                let process_excluded = langcheck_windows::policy::foreground_process_name()
+                    .is_none_or(|name| langcheck_windows::policy::is_default_excluded(&name));
+                let capture = class.capture_allowed()
+                    && !process_excluded
+                    && focus_shared.enabled()
+                    && !focus_shared.paused();
+                input::set_capture_allowed(capture);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        Err(e) => eprintln!("focus inspector unavailable: {e}"),
+    });
+
+    // Coordinator thread: the correction loop.
+    let coordinator_shared = Arc::clone(shared);
+    let coordinator_metrics = Arc::clone(metrics);
+    let coordinator_thread = std::thread::spawn(move || {
+        let mut coordinator = Coordinator::new(lexicon, coordinator_shared, coordinator_metrics);
+        coordinator.run(&rx);
+    });
+
+    Some((observer, focus_thread, coordinator_thread))
 }
 
 /// Step 01 measurement harness: install the keyboard observer, run the focus

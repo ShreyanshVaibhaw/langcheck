@@ -18,3 +18,5 @@ path = "src/main.rs"
 langcheck-core = { path = "../langcheck-core" }
 langcheck-lexicon = { path = "../langcheck-lexicon" }
 langcheck-windows = { path = "../langcheck-windows" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

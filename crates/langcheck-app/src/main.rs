@@ -25,23 +25,81 @@ use langcheck_windows::input::{self, LowLevelKeyboardObserver};
 use langcheck_windows::replace::{
     check_foreground_target, inject_text, ReplacementExecutor, ReplacementPlan, SendInputExecutor,
 };
+use langcheck_windows::startup::{self, SingleInstance};
 
+use crate::config::CorrectionMode;
 use crate::coordinator::{Coordinator, SharedState};
 use crate::diagnostics::Metrics;
+
+/// Per-user single-instance mutex name for the broker.
+const INSTANCE_MUTEX: &str = "Local\\LangCheck-broker-singleton";
 
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("--run") => run_autocorrect(),
         Some("--spike") => run_spike(),
         Some("--replace-demo") => run_replace_demo(),
+        Some("--status") => show_status(),
+        Some("--register-startup") => set_startup(true),
+        Some("--unregister-startup") => set_startup(false),
+        Some("--reset") => reset_state(),
         _ => println!(
             "LangCheck {} (bootstrap build).\n\
              Modes:\n  \
-             langcheck --run            end-to-end conservative autocorrect (Step 06)\n  \
-             langcheck --spike          input/focus observer harness (Step 01, ADR-0002)\n  \
-             langcheck --replace-demo   SendInput replacement + integrity skip (Step 05)",
+             langcheck --run                end-to-end conservative autocorrect (Step 06)\n  \
+             langcheck --status             show enabled/mode/start-at-login state\n  \
+             langcheck --register-startup   start LangCheck at sign-in (HKCU Run)\n  \
+             langcheck --unregister-startup remove start-at-login\n  \
+             langcheck --reset              delete all LangCheck state\n  \
+             langcheck --spike              input/focus observer harness (ADR-0002)\n  \
+             langcheck --replace-demo       SendInput replacement + integrity skip",
             env!("CARGO_PKG_VERSION")
         ),
+    }
+}
+
+/// `--status`: print the persisted settings and start-at-login registration.
+fn show_status() {
+    let config = persistence::load_config();
+    println!("LangCheck {}", env!("CARGO_PKG_VERSION"));
+    println!("  enabled:        {}", config.enabled);
+    println!("  mode:           {:?}", config.mode);
+    println!("  language:       {}", config.language);
+    println!(
+        "  start at login: config={} registry={}",
+        config.start_at_login,
+        startup::is_start_at_login_enabled()
+    );
+    match persistence::config_path() {
+        Some(path) => println!("  config file:    {}", path.display()),
+        None => println!("  config file:    <LOCALAPPDATA unavailable>"),
+    }
+}
+
+/// `--register-startup` / `--unregister-startup`: toggle start-at-login in both the
+/// registry and the persisted config.
+fn set_startup(enable: bool) {
+    if let Err(e) = startup::set_start_at_login(enable) {
+        eprintln!("failed to update start-at-login: {e}");
+        return;
+    }
+    let mut config = persistence::load_config();
+    config.start_at_login = enable;
+    if let Err(e) = persistence::save_config(&config) {
+        eprintln!("registry updated but failed to save config: {e}");
+        return;
+    }
+    println!(
+        "start-at-login {}.",
+        if enable { "enabled" } else { "disabled" }
+    );
+}
+
+/// `--reset`: delete all LangCheck state (config + user data).
+fn reset_state() {
+    match persistence::delete_all_state() {
+        Ok(()) => println!("all LangCheck state deleted."),
+        Err(e) => eprintln!("failed to delete state: {e}"),
     }
 }
 
@@ -49,6 +107,16 @@ fn main() {
 /// focus-safety thread (which gates capture), and the coordinator thread (which
 /// corrects high-confidence typos), printing redacted metrics until Enter.
 fn run_autocorrect() {
+    // Enforce a single broker instance.
+    let _instance = match SingleInstance::acquire(INSTANCE_MUTEX) {
+        Some(instance) => instance,
+        None => {
+            eprintln!("LangCheck is already running.");
+            return;
+        }
+    };
+    let config = persistence::load_config();
+
     println!("LangCheck autocorrect (Step 06). Type in a normal text field — common typos are");
     println!("corrected after a space or period. Sensitive/unknown fields are skipped, and");
     println!("rapid typing cancels rather than mis-corrects. Press Enter to stop.\n");
@@ -61,6 +129,9 @@ fn run_autocorrect() {
         }
     };
     let shared = Arc::new(SharedState::new());
+    // Apply persisted settings: correction is active only if enabled and not Off.
+    let active = config.enabled && config.mode != CorrectionMode::Off;
+    shared.enabled.store(active, Ordering::SeqCst);
     let metrics = Arc::new(Metrics::default());
 
     let (tx, rx) = sync_channel(256);

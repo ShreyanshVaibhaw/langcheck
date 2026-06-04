@@ -1981,7 +1981,7 @@ Plan status should be tracked in this table once implementation starts:
 | 05 | Done (code) | main | SendInput replacement executor: pure plan→keystrokes, integrity-gated, marked injected events, no clipboard, partial-insertion errors. `--replace-demo`. Real-control injection verification pending. |
 | 06 | Done (code) | main | Coordinator wires observer→translate→session→engine→commit-gate→replacement; kill switch/pause; redacted metrics; `--run`. First working version. Real-app run + perf verification pending. |
 | 07 | Done | main | Default app-category exclusions (fail-closed), network/telemetry deny bans + clean dep audit, bounded dictionary input, privacy.md + threat-model.md. Behavioral 19.6 tests vs live matrix pending (Step 11). |
-| 08 | Not started |  |  |
+| 08 | In progress | main | Done: config(toml/serde)+validation, atomic persistence, start-at-login registry, single-instance mutex, CLI controls, delete-all-state — all tested. Pending: native tray + settings (08b). |
 | 09 | Not started |  |  |
 | 10 | Not started |  |  |
 | 11 | Not started |  |  |

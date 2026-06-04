@@ -18,18 +18,24 @@ use std::sync::mpsc::{sync_channel, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::Duration;
 
+use langcheck_core::Boundary;
 use langcheck_windows::focus::{FieldClass, FocusInspector};
 use langcheck_windows::input::{self, LowLevelKeyboardObserver};
+use langcheck_windows::replace::{
+    check_foreground_target, inject_text, ReplacementExecutor, ReplacementPlan, SendInputExecutor,
+};
 
 fn main() {
-    if std::env::args().skip(1).any(|a| a == "--spike") {
-        run_spike();
-    } else {
-        println!(
-            "LangCheck {} (bootstrap build) — no correction functionality yet. \
-             Run `langcheck --spike` for the Step 01 input/focus measurement harness.",
+    match std::env::args().nth(1).as_deref() {
+        Some("--spike") => run_spike(),
+        Some("--replace-demo") => run_replace_demo(),
+        _ => println!(
+            "LangCheck {} (bootstrap build) — no correction functionality yet.\n\
+             Harnesses for manual verification:\n  \
+             langcheck --spike          input/focus observer (Step 01, ADR-0002)\n  \
+             langcheck --replace-demo   SendInput replacement + integrity skip (Step 05)",
             env!("CARGO_PKG_VERSION")
-        );
+        ),
     }
 }
 
@@ -112,6 +118,42 @@ fn run_spike() {
         input::generation(),
         input::dropped_count()
     );
+}
+
+/// Step 05 manual-verification harness: type "teh " into the focused field and
+/// correct it to "the " via the executor. On a higher-integrity (elevated) target
+/// it reports the integrity skip instead. (Password-field skipping is the focus
+/// inspector's job — verify that with `--spike`.)
+fn run_replace_demo() {
+    println!("Replacement demo (Step 05). Focus a text field; LangCheck will type \"teh \"");
+    println!("and correct it to \"the \". Focus an ELEVATED window to see the integrity skip.");
+    for remaining in (1..=3).rev() {
+        println!("  starting in {remaining}...");
+        std::thread::sleep(Duration::from_secs(1));
+    }
+
+    if let Err(e) = check_foreground_target() {
+        println!("skipped (no replacement performed): {e}");
+        return;
+    }
+    if let Err(e) = inject_text("teh ") {
+        println!("could not type demo text: {e}");
+        return;
+    }
+    std::thread::sleep(Duration::from_millis(300));
+
+    let plan = ReplacementPlan {
+        focus_id: 0,
+        expected_generation: 0,
+        original: "teh".to_owned(),
+        replacement: "the".to_owned(),
+        boundary: Boundary::Space,
+    };
+    let mut executor = SendInputExecutor;
+    match executor.execute(&plan) {
+        Ok(undo) => println!("replaced {:?} -> {:?}", undo.original, undo.replacement),
+        Err(e) => println!("replacement skipped/failed: {e}"),
+    }
 }
 
 fn class_code(class: FieldClass) -> u8 {

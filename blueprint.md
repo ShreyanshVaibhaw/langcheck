@@ -1978,7 +1978,7 @@ Plan status should be tracked in this table once implementation starts:
 | 02 | Done | main | Tokenizer, classifier, versioned session state machine; unit + fuzz tests. |
 | 03 | Done | main | LexiconProvider trait + prototype offline FST (`fst`) + fake backend; deadline/limit/error handling. |
 | 04 | Done | main | Candidate assembly + weighted ranking + conservative confidence policy w/ reason codes; corpus precision gate (0 harmful). |
-| 05 | Not started |  |  |
+| 05 | Done (code) | main | SendInput replacement executor: pure plan→keystrokes, integrity-gated, marked injected events, no clipboard, partial-insertion errors. `--replace-demo`. Real-control injection verification pending. |
 | 06 | Not started |  |  |
 | 07 | Not started |  |  |
 | 08 | Not started |  |  |

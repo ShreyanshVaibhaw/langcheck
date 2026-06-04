@@ -28,6 +28,9 @@ confidence-threshold = 0.9
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Workspace-internal path dependencies are intentionally versionless; only an
+# external crate pinned to "*" is a supply-chain/reproducibility concern.
+allow-wildcard-paths = true
 # LangCheck's offline guarantee is enforced primarily by dependency review and the
 # Step 07 privacy audit. Explicit network/telemetry crate bans are added there once
 # the dependency tree (and the exact crate names to ban) are known.

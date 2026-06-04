@@ -35,6 +35,9 @@ dependencies = [
 [[package]]
 name = "langcheck-core"
 version = "0.0.0"
+dependencies = [
+ "langcheck-lexicon",
+]
 
 [[package]]
 name = "langcheck-lexicon"

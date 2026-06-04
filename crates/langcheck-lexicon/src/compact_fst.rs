@@ -152,6 +152,12 @@ impl LexiconProvider for CompactFstLexicon {
             }
         }
 
+        // Damerau-style adjacent transpositions: a single swap is edit distance 2
+        // under plain Levenshtein, so the distance-1 policy for short words would
+        // miss the most common typo of all ("teh" -> "the"). Generate each adjacent
+        // swap, validate it against the FST, and record it as a single edit.
+        collect_transpositions(&self.map, &normalized, &mut raw);
+
         // Best first: nearest edit distance, then most frequent, then alphabetical.
         raw.sort_by(|a, b| {
             a.1.cmp(&b.1)
@@ -178,6 +184,29 @@ fn max_edit_distance(word: &str) -> u8 {
         2
     } else {
         1
+    }
+}
+
+/// Append dictionary words reachable from `normalized` by a single adjacent
+/// transposition, as edit-distance-1 candidates. If a word is already present
+/// (found by the Levenshtein pass at a higher distance), lower its distance to 1.
+fn collect_transpositions(map: &Map<Vec<u8>>, normalized: &str, raw: &mut Vec<(String, u8, u32)>) {
+    let chars: Vec<char> = normalized.chars().collect();
+    for i in 0..chars.len().saturating_sub(1) {
+        if chars[i] == chars[i + 1] {
+            continue;
+        }
+        let mut swapped = chars.clone();
+        swapped.swap(i, i + 1);
+        let swapped: String = swapped.into_iter().collect();
+        if let Some(freq) = map.get(swapped.as_bytes()) {
+            let frequency = u32::try_from(freq).unwrap_or(u32::MAX);
+            if let Some(pos) = raw.iter().position(|(w, _, _)| *w == swapped) {
+                raw[pos].1 = raw[pos].1.min(1);
+            } else if raw.len() < RAW_MATCH_CAP {
+                raw.push((swapped, 1, frequency));
+            }
+        }
     }
 }
 
@@ -244,12 +273,18 @@ mod tests {
         // Distance-2 double substitution on a longer word (len >= 6 -> max distance 2).
         let cands = l.candidates(LanguageTag::EnUs, "recieve", 8, None).unwrap();
         assert!(cands.iter().any(|c| c.word == "receive"), "got {cands:?}");
+    }
 
-        // A pure transposition such as "teh" -> "the" is edit distance 2 and so is
-        // NOT surfaced for a 3-letter word by the bounded-Levenshtein policy; it is
-        // produced by the Step 04 candidate generator's transposition variants
-        // (validated via `contains`). See blueprint.md Section 8.6.
-        assert!(l.contains(LanguageTag::EnUs, "the"));
+    #[test]
+    fn transpositions_are_surfaced_as_single_edits() {
+        let l = lex();
+        // A pure adjacent transposition ("teh" -> "the") is Levenshtein distance 2,
+        // which the distance-1 policy for a 3-letter word would miss; the
+        // transposition pass surfaces it as a single edit.
+        let cands = l.candidates(LanguageTag::EnUs, "teh", 8, None).unwrap();
+        let the = cands.iter().find(|c| c.word == "the");
+        assert!(the.is_some(), "expected 'the' for 'teh', got {cands:?}");
+        assert_eq!(the.unwrap().edit_distance, 1);
     }
 
     #[test]

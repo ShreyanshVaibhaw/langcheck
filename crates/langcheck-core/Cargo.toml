@@ -11,3 +11,8 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+
+[dev-dependencies]
+# Test-only: the deterministic fake lexicon for the corpus/precision tests. This
+# is a dev-dependency cycle (lexicon depends on core), which Cargo permits.
+langcheck-lexicon = { path = "../langcheck-lexicon", features = ["fake"] }

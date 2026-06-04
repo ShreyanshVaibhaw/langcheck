@@ -1977,7 +1977,7 @@ Plan status should be tracked in this table once implementation starts:
 | 01 | Not started |  |  |
 | 02 | Done | main | Tokenizer, classifier, versioned session state machine; unit + fuzz tests. |
 | 03 | Done | main | LexiconProvider trait + prototype offline FST (`fst`) + fake backend; deadline/limit/error handling. |
-| 04 | Not started |  |  |
+| 04 | Done | main | Candidate assembly + weighted ranking + conservative confidence policy w/ reason codes; corpus precision gate (0 harmful). |
 | 05 | Not started |  |  |
 | 06 | Not started |  |  |
 | 07 | Not started |  |  |

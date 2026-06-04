@@ -1976,7 +1976,7 @@ Plan status should be tracked in this table once implementation starts:
 | 00 | Done | main | Rust workspace, crate skeleton, toolchain pin, CI gates, repo docs. |
 | 01 | Not started |  |  |
 | 02 | Done | main | Tokenizer, classifier, versioned session state machine; unit + fuzz tests. |
-| 03 | Not started |  |  |
+| 03 | Done | main | LexiconProvider trait + prototype offline FST (`fst`) + fake backend; deadline/limit/error handling. |
 | 04 | Not started |  |  |
 | 05 | Not started |  |  |
 | 06 | Not started |  |  |

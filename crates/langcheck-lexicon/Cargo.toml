@@ -11,9 +11,16 @@ authors.workspace = true
 publish = false
 
 [features]
+# Deterministic in-memory backend for tests/benchmarks across crates.
+fake = []
 # Developer-only benchmark backend for the (rejected) Windows Spell Checking API.
 # Never enabled in release builds; see blueprint.md Section 8.5.
 dev-windows-spell = []
 
 [dependencies]
 langcheck-core = { path = "../langcheck-core" }
+# Read-only finite-state transducer for the offline lexicon; `levenshtein`
+# provides the bounded edit-distance automaton for candidate search.
+fst = { version = "0.4", features = ["levenshtein"] }
+# Bounded, mostly-stack candidate lists on the (off-callback) lookup path.
+smallvec = "1"

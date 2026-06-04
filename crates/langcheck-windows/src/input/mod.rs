@@ -30,6 +30,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::LANGCHECK_INJECTED_MARKER;
 
+pub mod translate;
+
 /// Whether a physical key event was a press or a release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEventKind {

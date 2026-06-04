@@ -19,24 +19,120 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use langcheck_core::Boundary;
-use langcheck_windows::focus::{FieldClass, FocusInspector};
+use langcheck_lexicon::compact_fst::CompactFstLexicon;
+use langcheck_windows::focus::{foreground_window_id, FieldClass, FocusInspector};
 use langcheck_windows::input::{self, LowLevelKeyboardObserver};
 use langcheck_windows::replace::{
     check_foreground_target, inject_text, ReplacementExecutor, ReplacementPlan, SendInputExecutor,
 };
 
+use crate::coordinator::{Coordinator, SharedState};
+use crate::diagnostics::Metrics;
+
 fn main() {
     match std::env::args().nth(1).as_deref() {
+        Some("--run") => run_autocorrect(),
         Some("--spike") => run_spike(),
         Some("--replace-demo") => run_replace_demo(),
         _ => println!(
-            "LangCheck {} (bootstrap build) — no correction functionality yet.\n\
-             Harnesses for manual verification:\n  \
-             langcheck --spike          input/focus observer (Step 01, ADR-0002)\n  \
+            "LangCheck {} (bootstrap build).\n\
+             Modes:\n  \
+             langcheck --run            end-to-end conservative autocorrect (Step 06)\n  \
+             langcheck --spike          input/focus observer harness (Step 01, ADR-0002)\n  \
              langcheck --replace-demo   SendInput replacement + integrity skip (Step 05)",
             env!("CARGO_PKG_VERSION")
         ),
     }
+}
+
+/// Step 06: the first working end-to-end autocorrect. Starts the observer, the
+/// focus-safety thread (which gates capture), and the coordinator thread (which
+/// corrects high-confidence typos), printing redacted metrics until Enter.
+fn run_autocorrect() {
+    println!("LangCheck autocorrect (Step 06). Type in a normal text field — common typos are");
+    println!("corrected after a space or period. Sensitive/unknown fields are skipped, and");
+    println!("rapid typing cancels rather than mis-corrects. Press Enter to stop.\n");
+
+    let lexicon = match CompactFstLexicon::prototype_en_us() {
+        Ok(lexicon) => lexicon,
+        Err(e) => {
+            eprintln!("failed to load lexicon: {e}");
+            return;
+        }
+    };
+    let shared = Arc::new(SharedState::new());
+    let metrics = Arc::new(Metrics::default());
+
+    let (tx, rx) = sync_channel(256);
+    let observer = match LowLevelKeyboardObserver::start(tx) {
+        Ok(observer) => observer,
+        Err(e) => {
+            eprintln!("failed to start keyboard observer: {e}");
+            return;
+        }
+    };
+
+    // Focus-safety thread: classify the focused field, publish focus id, gate capture.
+    let focus_shared = Arc::clone(&shared);
+    let focus_thread = std::thread::spawn(move || match FocusInspector::new() {
+        Ok(inspector) => {
+            while !focus_shared.is_shutdown() {
+                let class = inspector.classify_focused();
+                focus_shared
+                    .focus_id
+                    .store(foreground_window_id(), Ordering::SeqCst);
+                let capture =
+                    class.capture_allowed() && focus_shared.enabled() && !focus_shared.paused();
+                input::set_capture_allowed(capture);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        Err(e) => eprintln!("focus inspector unavailable: {e}"),
+    });
+
+    // Coordinator thread: the correction loop.
+    let coordinator_shared = Arc::clone(&shared);
+    let coordinator_metrics = Arc::clone(&metrics);
+    let coordinator_thread = std::thread::spawn(move || {
+        let mut coordinator =
+            Coordinator::new(Box::new(lexicon), coordinator_shared, coordinator_metrics);
+        coordinator.run(&rx);
+    });
+
+    // Stop on Enter.
+    let stop_shared = Arc::clone(&shared);
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        stop_shared.shutdown.store(true, Ordering::SeqCst);
+    });
+
+    while !shared.is_shutdown() {
+        std::thread::sleep(Duration::from_secs(2));
+        let s = metrics.snapshot();
+        println!(
+            "events={} resets={} known={} ignored={} suggested={} auto={} applied={} cancelled={} replace_fail={}",
+            s.events_translated,
+            s.sessions_reset,
+            s.known,
+            s.ignored,
+            s.suggested,
+            s.autocorrected,
+            s.corrections_applied,
+            s.commits_cancelled,
+            s.replace_failures,
+        );
+    }
+
+    input::set_capture_allowed(false);
+    observer.stop();
+    let _ = coordinator_thread.join();
+    let _ = focus_thread.join();
+    let s = metrics.snapshot();
+    println!(
+        "\nstopped. corrections applied={}, cancelled={}",
+        s.corrections_applied, s.commits_cancelled
+    );
 }
 
 /// Step 01 measurement harness: install the keyboard observer, run the focus

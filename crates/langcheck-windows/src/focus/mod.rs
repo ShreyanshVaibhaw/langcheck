@@ -24,6 +24,16 @@ use windows::Win32::System::Com::{
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, UIA_DocumentControlTypeId, UIA_EditControlTypeId,
 };
+use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+/// The current foreground window as an opaque id (`0` if none). The coordinator
+/// uses this as a coarse focus identity to detect focus changes; a change resets
+/// the typing session.
+pub fn foreground_window_id() -> u64 {
+    // SAFETY: GetForegroundWindow has no preconditions and may return a null HWND.
+    let hwnd = unsafe { GetForegroundWindow() };
+    hwnd.0 as u64
+}
 
 /// How a focused field is classified for capture (`blueprint.md` Section 12.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

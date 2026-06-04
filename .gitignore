@@ -1,0 +1,39 @@
+# Rust build output
+/target/
+**/*.rs.bk
+
+# Generated dictionaries and benchmarks
+/artifacts/
+/bench-results/
+/crash-dumps/
+*.dmp
+
+# Local runtime state and diagnostics
+/local-data/
+/logs/
+*.log
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Windows
+Thumbs.db
+Desktop.ini
+*.lnk
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*~
+

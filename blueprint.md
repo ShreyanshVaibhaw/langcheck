@@ -1980,7 +1980,7 @@ Plan status should be tracked in this table once implementation starts:
 | 04 | Done | main | Candidate assembly + weighted ranking + conservative confidence policy w/ reason codes; corpus precision gate (0 harmful). |
 | 05 | Done (code) | main | SendInput replacement executor: pure plan→keystrokes, integrity-gated, marked injected events, no clipboard, partial-insertion errors. `--replace-demo`. Real-control injection verification pending. |
 | 06 | Done (code) | main | Coordinator wires observer→translate→session→engine→commit-gate→replacement; kill switch/pause; redacted metrics; `--run`. First working version. Real-app run + perf verification pending. |
-| 07 | Not started |  |  |
+| 07 | Done | main | Default app-category exclusions (fail-closed), network/telemetry deny bans + clean dep audit, bounded dictionary input, privacy.md + threat-model.md. Behavioral 19.6 tests vs live matrix pending (Step 11). |
 | 08 | Not started |  |  |
 | 09 | Not started |  |  |
 | 10 | Not started |  |  |

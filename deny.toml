@@ -32,9 +32,24 @@ wildcards = "deny"
 # Workspace-internal path dependencies are intentionally versionless; only an
 # external crate pinned to "*" is a supply-chain/reproducibility concern.
 allow-wildcard-paths = true
-# LangCheck's offline guarantee is enforced primarily by dependency review and the
-# Step 07 privacy audit. Explicit network/telemetry crate bans are added there once
-# the dependency tree (and the exact crate names to ban) are known.
+# Offline guarantee (blueprint.md Sections 1.1, 16): the dependency tree must
+# contain no networking, telemetry, crash-upload, remote-logging, cloud-sync, or
+# update client, and no general-purpose async runtime in the resident process.
+# Defence-in-depth on top of dependency review.
+deny = [
+    { crate = "reqwest", reason = "HTTP client — no networking (blueprint 1.1)" },
+    { crate = "hyper", reason = "HTTP — no networking" },
+    { crate = "ureq", reason = "HTTP client — no networking" },
+    { crate = "isahc", reason = "HTTP client — no networking" },
+    { crate = "curl", reason = "HTTP client — no networking" },
+    { crate = "attohttpc", reason = "HTTP client — no networking" },
+    { crate = "surf", reason = "HTTP client — no networking" },
+    { crate = "tonic", reason = "gRPC client — no networking" },
+    { crate = "tokio", reason = "async runtime — not permitted in the resident process (blueprint 16)" },
+    { crate = "async-std", reason = "async runtime — not permitted (blueprint 16)" },
+    { crate = "sentry", reason = "crash/telemetry upload — prohibited (blueprint 1.1)" },
+    { crate = "opentelemetry", reason = "telemetry — prohibited" },
+]
 
 [sources]
 unknown-registry = "deny"

@@ -81,8 +81,13 @@ fn run_autocorrect() {
                 focus_shared
                     .focus_id
                     .store(foreground_window_id(), Ordering::SeqCst);
-                let capture =
-                    class.capture_allowed() && focus_shared.enabled() && !focus_shared.paused();
+                // Fail closed: an unknown foreground process is treated as excluded.
+                let process_excluded = langcheck_windows::policy::foreground_process_name()
+                    .is_none_or(|name| langcheck_windows::policy::is_default_excluded(&name));
+                let capture = class.capture_allowed()
+                    && !process_excluded
+                    && focus_shared.enabled()
+                    && !focus_shared.paused();
                 input::set_capture_allowed(capture);
                 std::thread::sleep(Duration::from_millis(50));
             }

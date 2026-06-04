@@ -30,6 +30,11 @@ const PROTOTYPE_EN_US_VERSION: &str = "prototype-en-US-1";
 /// work on large dictionaries (`blueprint.md` Section 8.6).
 const RAW_MATCH_CAP: usize = 64;
 
+/// Defensive input bounds for dictionary loading (`blueprint.md` Sections 14, 19.6):
+/// a malformed or oversized word list must never exhaust memory.
+const MAX_DICTIONARY_WORD_LEN: usize = 64;
+const MAX_DICTIONARY_LINES: usize = 2_000_000;
+
 /// A read-only compact FST lexicon mapping each known word to a frequency.
 pub struct CompactFstLexicon {
     language: LanguageTag,
@@ -52,7 +57,11 @@ impl CompactFstLexicon {
         list: &str,
         version: &'static str,
     ) -> Result<Self, LexiconError> {
-        let mut entries: Vec<(String, u64)> = list.lines().filter_map(parse_line).collect();
+        let mut entries: Vec<(String, u64)> = list
+            .lines()
+            .take(MAX_DICTIONARY_LINES)
+            .filter_map(parse_line)
+            .collect();
         entries.sort_by(|a, b| a.0.cmp(&b.0));
         entries.dedup_by(|next, kept| {
             if next.0 == kept.0 {
@@ -223,7 +232,10 @@ fn parse_line(line: &str) -> Option<(String, u64)> {
     }
     let mut fields = line.split_whitespace();
     let word = fields.next()?.to_ascii_lowercase();
-    if word.is_empty() || !word.chars().all(|c| c.is_ascii_alphabetic() || c == '\'') {
+    if word.is_empty()
+        || word.len() > MAX_DICTIONARY_WORD_LEN
+        || !word.chars().all(|c| c.is_ascii_alphabetic() || c == '\'')
+    {
         return None;
     }
     let frequency = fields

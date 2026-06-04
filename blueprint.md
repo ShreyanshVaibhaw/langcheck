@@ -1974,7 +1974,7 @@ Plan status should be tracked in this table once implementation starts:
 | Step | Status | PR/commit | Notes |
 |---|---|---|---|
 | 00 | Done | main | Rust workspace, crate skeleton, toolchain pin, CI gates, repo docs. |
-| 01 | Not started |  |  |
+| 01 | Done (code) | main | WH_KEYBOARD_LL observer + UIA focus inspector + integrity checks + `--spike` harness + ADR-0002. On-hardware measurement/app-matrix verification pending (ADR-0002 checklist). |
 | 02 | Done | main | Tokenizer, classifier, versioned session state machine; unit + fuzz tests. |
 | 03 | Done | main | LexiconProvider trait + prototype offline FST (`fst`) + fake backend; deadline/limit/error handling. |
 | 04 | Done | main | Candidate assembly + weighted ranking + conservative confidence policy w/ reason codes; corpus precision gate (0 harmful). |

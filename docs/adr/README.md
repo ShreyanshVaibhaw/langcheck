@@ -13,8 +13,8 @@ licensing, or startup behavior** require an ADR.
 | ADR | Title | Status |
 |---|---|---|
 | [0001](0001-rust-as-the-primary-language.md) | Rust as the primary language | Accepted |
+| [0002](0002-mvp-keyboard-observer.md) | `WH_KEYBOARD_LL` as the MVP keyboard observer | Accepted (provisional) |
 
-Decisions ADR-002 through ADR-006 are currently recorded inline in
+Decisions ADR-003 through ADR-006 are currently recorded inline in
 [`blueprint.md`](../../blueprint.md) Section 23 and will be migrated into this
-directory as they are next revisited. The MVP keyboard-observer decision is
-produced as a new ADR in delivery Step 01.
+directory as they are next revisited.

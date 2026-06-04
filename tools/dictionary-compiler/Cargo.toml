@@ -1,0 +1,16 @@
+[package]
+name = "dictionary-compiler"
+description = "Build-time tool that compiles an approved word list and frequency data into LangCheck's compact FST lexicon."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "dictionary-compiler"
+path = "src/main.rs"
+
+[dependencies]

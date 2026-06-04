@@ -1973,7 +1973,7 @@ Plan status should be tracked in this table once implementation starts:
 
 | Step | Status | PR/commit | Notes |
 |---|---|---|---|
-| 00 | Not started |  |  |
+| 00 | Done | main | Rust workspace, crate skeleton, toolchain pin, CI gates, repo docs. |
 | 01 | Not started |  |  |
 | 02 | Not started |  |  |
 | 03 | Not started |  |  |

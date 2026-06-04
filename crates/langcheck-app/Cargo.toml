@@ -1,0 +1,18 @@
+[package]
+name = "langcheck-app"
+description = "The LangCheck broker (langcheck.exe): coordinator, configuration, and local persistence."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "langcheck"
+path = "src/main.rs"
+
+[dependencies]
+langcheck-core = { path = "../langcheck-core" }
+langcheck-lexicon = { path = "../langcheck-lexicon" }
+langcheck-windows = { path = "../langcheck-windows" }

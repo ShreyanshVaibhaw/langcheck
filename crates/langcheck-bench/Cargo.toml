@@ -1,0 +1,18 @@
+[package]
+name = "langcheck-bench"
+description = "Benchmarks for LangCheck's hot path (tokenizer, ranking) and lexicon lookup."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+langcheck-core = { path = "../langcheck-core" }
+langcheck-lexicon = { path = "../langcheck-lexicon" }
+
+# Criterion benchmark targets are added alongside the components they measure
+# (delivery Steps 03, 04, 06, and 11), at which point a `[[bench]]` entry and the
+# `criterion` dev-dependency are introduced.

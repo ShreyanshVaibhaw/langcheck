@@ -1,0 +1,38 @@
+# cargo-deny configuration — dependency license & supply-chain policy.
+# Docs: https://embarkstudios.github.io/cargo-deny/
+#
+# Run locally with: cargo deny check
+
+[advisories]
+# Fail on any crate pulled from a yanked release. Security advisories are denied
+# by default in the current cargo-deny schema.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Only permissive, redistribution-friendly licenses are allowed. A dependency
+# whose license is not on this list must be justified in a dependency review.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# LangCheck's offline guarantee is enforced primarily by dependency review and the
+# Step 07 privacy audit. Explicit network/telemetry crate bans are added there once
+# the dependency tree (and the exact crate names to ban) are known.
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -1,0 +1,15 @@
+[package]
+name = "langcheck-windows"
+description = "Windows integration for LangCheck: input observation, focus safety, replacement, tray UI, and startup."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+langcheck-core = { path = "../langcheck-core" }
+# The `windows` / `windows-core` crates are added in Step 01 (input/focus spike).
+
+[target.'cfg(windows)'.dependencies]

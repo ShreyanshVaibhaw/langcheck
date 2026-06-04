@@ -1,0 +1,9 @@
+# Normalize line endings to LF in the repository on every platform so that
+# `cargo fmt --check` (newline_style = "Unix") is consistent across Windows/Linux CI.
+* text=auto eol=lf
+
+# Binary assets must never be normalized.
+*.fst binary
+*.png binary
+*.ico binary
+*.dmp binary

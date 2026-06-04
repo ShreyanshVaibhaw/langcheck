@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Pull-request gates from blueprint.md Section 20:
+#   1. cargo fmt --check
+#   2. cargo clippy --workspace --all-targets -- -D warnings
+#   3. cargo test --workspace
+#   4. Platform-independent fuzz/property smoke tests (run within `test`)
+#   5. Windows x64 release build
+#   6. Dependency license and vulnerability checks (cargo-deny)
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Format & Clippy (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Provision pinned toolchain (rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: Test (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Provision pinned toolchain (rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test (all targets)
+        run: cargo test --workspace --all-targets --locked
+      - name: cargo test (doctests)
+        run: cargo test --workspace --doc --locked
+
+  build-release:
+    name: Release build & smoke run (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Provision pinned toolchain (rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build --release
+        run: cargo build --workspace --release --locked
+      - name: Smoke-run langcheck.exe (must start and exit cleanly)
+        shell: pwsh
+        run: |
+          & ".\target\release\langcheck.exe"
+          if ($LASTEXITCODE -ne 0) { throw "langcheck.exe exited with code $LASTEXITCODE" }
+
+  core-portable:
+    name: Core platform-independence (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Provision pinned toolchain (rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Build & test platform-independent crates on Linux
+        run: cargo test -p langcheck-core -p langcheck-lexicon --all-targets --locked
+
+  deny:
+    name: Dependency audit (licenses & advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

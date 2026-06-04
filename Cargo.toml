@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/langcheck-core",
+    "crates/langcheck-lexicon",
+    "crates/langcheck-windows",
+    "crates/langcheck-app",
+    "crates/langcheck-bench",
+    "tools/dictionary-compiler",
+]
+
+# Post-MVP crates are added in their delivery step:
+#   crates/langcheck-tsf  ->  Step 13 (TSF precision adapter)
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.93"
+license = "MIT"
+repository = "https://github.com/ShreyanshVaibhaw/langcheck"
+authors = ["The LangCheck Authors"]
+
+# Release profile tuned for the small-footprint budgets in blueprint.md Section 5.
+# NOTE: `panic` is intentionally left at the default (`unwind`) so that a panic on
+# a worker thread can be isolated while the tray UI survives (blueprint Section 17).
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

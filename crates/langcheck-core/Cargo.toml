@@ -7,5 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+# Application workspace crate; not published to crates.io.
+publish = false
 
 [dependencies]

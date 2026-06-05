@@ -36,6 +36,35 @@ ADR-0002) are important for expectations:
 fluent typing — pause after the word. `unsafe`/`focus` mean the field/app was not a
 safe capture target. `langcheck --spike` shows the live focus classification per app.
 
+## The TSF precision adapter (rich/web editors)
+
+For editors where `SendInput` is unreliable (note apps, browser fields, Electron),
+the post-MVP **TSF adapter** (Step 13, ADR-0008) corrects text by exact-range
+*edit-session* replacement instead of synthetic keystrokes. It is **host-verified
+working** (e.g. WordPad: `wierd `→`weird `). It is **opt-in** and off by default.
+
+Enable it (one-time, needs admin — TSF text services register machine-wide, like any
+IME):
+
+```
+langcheck --register-tsf      # self-elevates via UAC
+```
+
+Then run the broker (`langcheck --background`, or `langcheck --broker-serve` for a
+headless/test server), switch the input method to **"LangCheck"** (Win+Space), and
+type. Controls:
+
+- `langcheck --tsf-disable` / `--tsf-enable` — kill switch: stop/allow TSF
+  corrections **without** unregistering (the MVP path is unaffected). `--status`
+  shows the current state.
+- `langcheck --unregister-tsf` — remove the adapter entirely (self-elevates).
+- `langcheck --tsf-comtest` / `--tsf-selftest` — diagnostics: COM activation and
+  broker connectivity, without a host app.
+
+Notes: the broker still makes every correction decision (same conservative engine as
+the MVP), so words it isn't confident about are left alone. The adapter is fail-open
+— if the broker isn't running or anything errors, your text is left untouched.
+
 ## Levels
 
 | Level | Meaning |
@@ -55,7 +84,7 @@ safe capture target. `langcheck --spike` shows the live focus classification per
 | Microsoft Edge text area | LL hook | UIA `Document`/`Edit` | `SendInput` | **Supported** (confirm) | As above. |
 | Microsoft Word | LL hook | UIA `Document` | `SendInput` | **Suggestion only** (confirm) | Autolayout/autocorrect interactions; verify before enabling auto. |
 | Chat field (Slack/Teams/etc.) | LL hook | UIA varies | `SendInput` | **Supported** (confirm) | Electron UIA quality varies. |
-| Markdown / web / Electron note editors | LL hook | UIA `Document`/varies | `SendInput` (unreliable) | **Suggestion only** | Field-tested: synthetic-keystroke replacement is often intercepted/undone. Exact-range editing needs the TSF adapter (Step 13). |
+| Markdown / web / Electron note editors | LL hook | UIA `Document`/varies | `SendInput` (unreliable) → **TSF adapter** | **Suggestion only** (TSF: opt-in) | Field-tested: synthetic-keystroke replacement is often intercepted/undone. Exact-range editing via the **TSF adapter (Step 13, ADR-0008)** is host-verified working here — opt-in, see "The TSF precision adapter" above. |
 | Windows Terminal / cmd / PowerShell | — | — | — | **Disabled by default** | `policy.rs` exclusion (destructive/non-prose). |
 | Code editors / IDEs (VS Code, JetBrains, …) | — | — | — | **Disabled by default** | `policy.rs` exclusion (code, not prose). |
 | Password managers (KeePass, 1Password, …) | — | — | — | **Disabled by default** | `policy.rs` exclusion. |

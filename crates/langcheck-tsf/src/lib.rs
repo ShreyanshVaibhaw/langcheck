@@ -24,11 +24,14 @@
 //!   activate → advise → focus → deactivate path through a real TSF thread manager
 //!   with no fault (catches the COM-plumbing/AV class of bug without a host app).
 //!
-//! The service still **does not modify any text**: the focus sink is a no-op hook
-//! and `ask_broker` is not yet called from a live edit path. The per-context edit
-//! sink (detect a typed word), the edit-session range replacement (apply it), and
-//! host-process testing of that live path are the remaining work — that is where a
-//! bug could destabilise a host app, so it stays behind the fail-open contract.
+//! - Live edit path (detect a completed word in `OnEndEdit` → `ask_broker` →
+//!   replace the verified word range via an async read-write edit session). This is
+//!   **implemented and compile-/unit-verified** (the pure detection logic is tested;
+//!   the replacement only acts on a range whose text is re-checked to equal the
+//!   detected word, so it can never replace the wrong text) but is **NOT yet
+//!   host-verified** — it only runs inside a real editor, where a bug could
+//!   destabilise the host. That host-process testing is the remaining work; the
+//!   whole path is fail-open (any error or uncertainty leaves host text untouched).
 
 // COM/FFI requires `unsafe`; enforce a `// SAFETY:` comment on every unsafe block
 // (blueprint.md Section 12.4) rather than forbidding it.
@@ -61,10 +64,11 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::UI::TextServices::{
     CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfCategoryMgr,
-    ITfContext, ITfDocumentMgr, ITfEditRecord, ITfInputProcessorProfiles, ITfSource,
-    ITfTextEditSink, ITfTextEditSink_Impl, ITfTextInputProcessor, ITfTextInputProcessor_Impl,
-    ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl, GUID_TFCAT_TIP_KEYBOARD,
-    TF_DEFAULT_SELECTION, TF_SELECTION,
+    ITfContext, ITfDocumentMgr, ITfEditRecord, ITfEditSession, ITfEditSession_Impl,
+    ITfInputProcessorProfiles, ITfRange, ITfSource, ITfTextEditSink, ITfTextEditSink_Impl,
+    ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfThreadMgr, ITfThreadMgrEventSink,
+    ITfThreadMgrEventSink_Impl, GUID_TFCAT_TIP_KEYBOARD, TF_DEFAULT_SELECTION, TF_ES_ASYNCDONTCARE,
+    TF_ES_READWRITE, TF_SELECTION, TF_ST_CORRECTION,
 };
 
 /// Fixed CLSID of the LangCheck text service. Must never change once registered.
@@ -147,17 +151,101 @@ fn read_trailing_token(context: &ITfContext, ec: u32) -> Option<(String, Boundar
     detect_token(&text)
 }
 
-/// Per-context text-edit sink: after each edit it checks whether a word was just
-/// completed and, if so, asks the broker. READ-ONLY for now — it never modifies the
-/// document (the edit-session replacement is the next increment), so it cannot
-/// corrupt host text. Fail-open everywhere.
+/// Re-derive the range covering exactly `token` — the `token`-length run ending one
+/// boundary character before the caret — and return it ONLY if its text equals
+/// `token`. That verification is the safety guarantee: a range is never handed to
+/// `SetText` unless it provably covers exactly the detected word, so a shift-math
+/// error can never replace the wrong text.
+fn verified_word_range(context: &ITfContext, ec: u32, token: &str) -> Option<ITfRange> {
+    let token_chars = i32::try_from(token.chars().count()).ok()?;
+    let mut selection = [TF_SELECTION::default()];
+    let mut fetched = 0u32;
+    // SAFETY: read the caret selection within the read cookie `ec`.
+    unsafe { context.GetSelection(ec, TF_DEFAULT_SELECTION, &mut selection, &mut fetched) }.ok()?;
+    if fetched == 0 {
+        return None;
+    }
+    // SAFETY: take the range out of the ManuallyDrop; `selection` is not reused.
+    let range = unsafe { ManuallyDrop::take(&mut selection[0].range) }?;
+    let mut moved = 0i32;
+    // SAFETY: move the start back over the word + the one boundary char.
+    unsafe { range.ShiftStart(ec, -(token_chars + 1), &mut moved, std::ptr::null()) }.ok()?;
+    // SAFETY: move the end back over just the boundary char, leaving exactly the word.
+    unsafe { range.ShiftEnd(ec, -1, &mut moved, std::ptr::null()) }.ok()?;
+    let mut buffer = [0u16; LOOKBACK_CHARS as usize];
+    let mut copied = 0u32;
+    // SAFETY: read the candidate word range's text to verify it.
+    unsafe { range.GetText(ec, 0, &mut buffer, &mut copied) }.ok()?;
+    let got = String::from_utf16_lossy(&buffer[..copied as usize]);
+    (got == token).then_some(range)
+}
+
+/// An edit session that replaces one fixed range's text with a fixed string.
+#[implement(ITfEditSession)]
+struct ReplaceSession {
+    range: ITfRange,
+    replacement: Vec<u16>,
+}
+
+impl ReplaceSession {
+    fn new(range: ITfRange, replacement: &str) -> Self {
+        add_ref();
+        Self {
+            range,
+            replacement: replacement.encode_utf16().collect(),
+        }
+    }
+}
+
+impl Drop for ReplaceSession {
+    fn drop(&mut self) {
+        release();
+    }
+}
+
+impl ITfEditSession_Impl for ReplaceSession_Impl {
+    fn DoEditSession(&self, ec: u32) -> Result<()> {
+        // SAFETY: write within the granted write cookie; replace the verified word
+        // range. TF_ST_CORRECTION marks this as an autocorrection to the host.
+        unsafe { self.range.SetText(ec, TF_ST_CORRECTION, &self.replacement) }
+    }
+}
+
+/// Detect a just-completed word, ask the broker, and — if it returns a correction —
+/// apply it via an asynchronous read-write edit session. Fail-open at every step:
+/// any error or uncertainty leaves the host's text untouched.
+fn maybe_correct(context: &ITfContext, ec: u32, client_id: u32) {
+    let Some((token, boundary)) = read_trailing_token(context, ec) else {
+        return;
+    };
+    let Some(replacement) = ask_broker(&token, boundary) else {
+        return;
+    };
+    let Some(range) = verified_word_range(context, ec, &token) else {
+        return;
+    };
+    let session: ITfEditSession = ReplaceSession::new(range, &replacement).into();
+    // SAFETY: request an async read-write edit session — TSF calls DoEditSession with
+    // a write cookie once the lock is free. ASYNCDONTCARE is required here: we are
+    // inside OnEndEdit, where a synchronous lock would be refused.
+    let _ = unsafe {
+        context.RequestEditSession(client_id, &session, TF_ES_READWRITE | TF_ES_ASYNCDONTCARE)
+    };
+}
+
+/// Per-context text-edit sink: after each edit, if a word was just completed by a
+/// boundary it is detected, sent to the broker, and any correction is applied via an
+/// edit session. Fail-open everywhere.
 #[implement(ITfTextEditSink)]
-struct EditSink;
+struct EditSink {
+    /// TSF client id (from activation), needed to request edit sessions.
+    client_id: u32,
+}
 
 impl EditSink {
-    fn new() -> Self {
+    fn new(client_id: u32) -> Self {
         add_ref();
-        Self
+        Self { client_id }
     }
 }
 
@@ -175,11 +263,7 @@ impl ITfTextEditSink_Impl for EditSink_Impl {
         _record: Option<&ITfEditRecord>,
     ) -> Result<()> {
         if let Some(context) = context {
-            if let Some((token, boundary)) = read_trailing_token(context, ec) {
-                // Read-only increment: ask the broker (it records the request); the
-                // returned replacement is NOT applied yet.
-                let _ = ask_broker(&token, boundary);
-            }
+            maybe_correct(context, ec, self.client_id);
         }
         Ok(())
     }
@@ -190,15 +274,18 @@ impl ITfTextEditSink_Impl for EditSink_Impl {
 /// never disturb the host.
 #[implement(ITfThreadMgrEventSink)]
 struct ThreadMgrSink {
+    /// TSF client id (from activation), passed to each [`EditSink`] it advises.
+    client_id: u32,
     /// The focused context's event source + our edit-sink cookie, so we can
     /// unadvise when focus moves away or on teardown. `None` when not advised.
     edit_advise: RefCell<Option<(ITfSource, u32)>>,
 }
 
 impl ThreadMgrSink {
-    fn new() -> Self {
+    fn new(client_id: u32) -> Self {
         add_ref();
         Self {
+            client_id,
             edit_advise: RefCell::new(None),
         }
     }
@@ -223,7 +310,7 @@ impl ThreadMgrSink {
         let Ok(source) = context.cast::<ITfSource>() else {
             return;
         };
-        let sink: ITfTextEditSink = EditSink::new().into();
+        let sink: ITfTextEditSink = EditSink::new(self.client_id).into();
         // SAFETY: `source` is the context's event source; `sink` is a valid COM
         // object that implements ITfTextEditSink.
         if let Ok(cookie) = unsafe { source.AdviseSink(&ITfTextEditSink::IID, &sink) } {
@@ -291,12 +378,12 @@ impl Drop for TextService {
 }
 
 impl ITfTextInputProcessor_Impl for TextService_Impl {
-    fn Activate(&self, thread_mgr: Option<&ITfThreadMgr>, _client_id: u32) -> Result<()> {
+    fn Activate(&self, thread_mgr: Option<&ITfThreadMgr>, client_id: u32) -> Result<()> {
         // Fail open: advise the focus sink, but never fail activation if we cannot —
         // an inert service is always safe.
         if let Some(thread_mgr) = thread_mgr {
             if let Ok(source) = thread_mgr.cast::<ITfSource>() {
-                let sink: ITfThreadMgrEventSink = ThreadMgrSink::new().into();
+                let sink: ITfThreadMgrEventSink = ThreadMgrSink::new(client_id).into();
                 // SAFETY: `source` is the thread manager's event source and `sink`
                 // is a valid COM object; AdviseSink returns a cookie on success.
                 let advised = unsafe { source.AdviseSink(&ITfThreadMgrEventSink::IID, &sink) };

@@ -18,6 +18,7 @@
 pub mod candidate;
 pub mod classify;
 pub mod confidence;
+pub mod ipc;
 pub mod rank;
 pub mod session;
 pub mod token;
@@ -29,6 +30,7 @@ pub use classify::{classify_token, TokenClass};
 pub use confidence::{
     decide, evaluate, Candidate, ConfidencePolicy, CorrectionDecision, IgnoreReason, SuggestReason,
 };
+pub use ipc::{IpcError, Request as IpcRequest, Response as IpcResponse, PROTOCOL_VERSION};
 pub use rank::{rank, RankWeights, ScoredCandidate};
 pub use session::{
     Boundary, ResetReason, Session, SessionConfig, SessionEvent, SessionOutcome, WordSnapshot,

@@ -112,7 +112,7 @@ fn run_background() {
         let _ = persistence::save_config(&config);
     }
 
-    let lexicon = match CompactFstLexicon::prototype_en_us() {
+    let lexicon = match CompactFstLexicon::production_en_us() {
         Ok(lexicon) => lexicon,
         Err(_) => return,
     };
@@ -208,7 +208,7 @@ fn run_autocorrect() {
     println!("corrected after a space or period. Sensitive/unknown fields are skipped, and");
     println!("rapid typing cancels rather than mis-corrects. Press Enter to stop.\n");
 
-    let lexicon = match CompactFstLexicon::prototype_en_us() {
+    let lexicon = match CompactFstLexicon::production_en_us() {
         Ok(lexicon) => lexicon,
         Err(e) => {
             eprintln!("failed to load lexicon: {e}");

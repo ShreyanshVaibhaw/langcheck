@@ -5,9 +5,12 @@
 //! bounded Levenshtein automaton over the FST, giving deterministic latency and
 //! memory behavior (see `blueprint.md` Section 8.5 and ADR-004).
 //!
-//! In this step (03) the FST is built in memory from a small embedded prototype
-//! word list — no file and no `mmap`, so the crate stays free of `unsafe`. The
-//! memory-mapped, licensed production lexicon arrives in Step 09.
+//! Two backings share one generic type: [`CompactFstLexicon<Vec<u8>>`] builds an
+//! FST in memory from the small embedded prototype list (dev/tests), and
+//! [`CompactFstLexicon<&'static [u8]>`] loads the production FST embedded via
+//! `include_bytes!` (compiled offline by `tools/dictionary-compiler`). Embedding
+//! keeps the crate free of `unsafe` — no file and no `mmap` — while shipping the
+//! dictionary inside the executable (see ADR-0007).
 
 use std::time::Instant;
 
@@ -35,15 +38,17 @@ const RAW_MATCH_CAP: usize = 64;
 const MAX_DICTIONARY_WORD_LEN: usize = 64;
 const MAX_DICTIONARY_LINES: usize = 2_000_000;
 
-/// A read-only compact FST lexicon mapping each known word to a frequency.
-pub struct CompactFstLexicon {
+/// A read-only compact FST lexicon mapping each known word to a frequency. The
+/// backing `D` is `Vec<u8>` for the in-memory prototype/dev lexicon and
+/// `&'static [u8]` for the bundled production lexicon.
+pub struct CompactFstLexicon<D: AsRef<[u8]> = Vec<u8>> {
     language: LanguageTag,
-    map: Map<Vec<u8>>,
+    map: Map<D>,
     word_count: usize,
     version: &'static str,
 }
 
-impl CompactFstLexicon {
+impl CompactFstLexicon<Vec<u8>> {
     /// Build the prototype `en-US` lexicon from the embedded word list.
     pub fn prototype_en_us() -> Result<Self, LexiconError> {
         Self::from_word_list(LanguageTag::EnUs, PROTOTYPE_EN_US, PROTOTYPE_EN_US_VERSION)
@@ -93,19 +98,43 @@ impl CompactFstLexicon {
             version,
         })
     }
+}
 
+/// The bundled production FST, embedded in the binary and compiled offline by
+/// `tools/dictionary-compiler` from `data/en-US.wordfreq.txt` (see ADR-0007).
+/// Embedding ships the lexicon inside the (signed) executable: it is demand-paged
+/// from the image, needs no separate file or `mmap`, and cannot be tampered with
+/// independently — so no runtime hash check is required.
+const EN_US_FST: &[u8] = include_bytes!("../dictionaries/en-US.fst");
+const PRODUCTION_EN_US_VERSION: &str = "en-US-1";
+
+impl CompactFstLexicon<&'static [u8]> {
+    /// Load the bundled production `en-US` lexicon.
+    pub fn production_en_us() -> Result<Self, LexiconError> {
+        let map = Map::new(EN_US_FST).map_err(|e| LexiconError::Backend(e.to_string()))?;
+        let word_count = map.len();
+        Ok(Self {
+            language: LanguageTag::EnUs,
+            map,
+            word_count,
+            version: PRODUCTION_EN_US_VERSION,
+        })
+    }
+}
+
+impl<D: AsRef<[u8]>> CompactFstLexicon<D> {
     /// Number of distinct words in the lexicon.
     pub fn word_count(&self) -> usize {
         self.word_count
     }
 
-    /// Dictionary version stamp (hash/version validation is added in Step 09).
+    /// Dictionary version stamp.
     pub fn version(&self) -> &str {
         self.version
     }
 }
 
-impl LexiconProvider for CompactFstLexicon {
+impl<D: AsRef<[u8]> + Send + Sync> LexiconProvider for CompactFstLexicon<D> {
     fn language(&self) -> LanguageTag {
         self.language
     }
@@ -199,7 +228,11 @@ fn max_edit_distance(word: &str) -> u8 {
 /// Append dictionary words reachable from `normalized` by a single adjacent
 /// transposition, as edit-distance-1 candidates. If a word is already present
 /// (found by the Levenshtein pass at a higher distance), lower its distance to 1.
-fn collect_transpositions(map: &Map<Vec<u8>>, normalized: &str, raw: &mut Vec<(String, u8, u32)>) {
+fn collect_transpositions<D: AsRef<[u8]>>(
+    map: &Map<D>,
+    normalized: &str,
+    raw: &mut Vec<(String, u8, u32)>,
+) {
     let chars: Vec<char> = normalized.chars().collect();
     for i in 0..chars.len().saturating_sub(1) {
         if chars[i] == chars[i + 1] {
@@ -263,6 +296,22 @@ mod tests {
         );
         assert_eq!(l.version(), "prototype-en-US-1");
         assert_eq!(l.language(), LanguageTag::EnUs);
+    }
+
+    #[test]
+    fn production_lexicon_loads_with_a_real_vocabulary() {
+        let l = CompactFstLexicon::production_en_us().expect("production lexicon loads");
+        assert!(l.word_count() > 20_000, "got {}", l.word_count());
+        assert_eq!(l.version(), "en-US-1");
+        assert!(l.contains(LanguageTag::EnUs, "the"));
+        assert!(l.contains(LanguageTag::EnUs, "receive"));
+        assert!(l.contains(LanguageTag::EnUs, "friend"));
+        assert!(l.contains(LanguageTag::EnUs, "don't"));
+        // A common misspelling must NOT be in the dictionary.
+        assert!(!l.contains(LanguageTag::EnUs, "teh"));
+        // Candidate generation works on the real FST.
+        let cands = l.candidates(LanguageTag::EnUs, "recieve", 8, None).unwrap();
+        assert!(cands.iter().any(|c| c.word == "receive"), "got {cands:?}");
     }
 
     #[test]
@@ -335,7 +384,8 @@ mod tests {
     #[test]
     #[ignore = "release-only latency measurement; run with --release --ignored --nocapture"]
     fn lookup_latency_measurement() {
-        let l = lex();
+        // Measure the PRODUCTION lexicon (what ships), not the prototype.
+        let l = CompactFstLexicon::production_en_us().expect("production lexicon");
         let words = [
             "the", "wrd", "recieve", "hello", "world", "beleive", "friend", "xyzzy", "separate",
             "tomorow",

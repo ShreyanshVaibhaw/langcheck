@@ -14,6 +14,7 @@ licensing, or startup behavior** require an ADR.
 |---|---|---|
 | [0001](0001-rust-as-the-primary-language.md) | Rust as the primary language | Accepted |
 | [0002](0002-mvp-keyboard-observer.md) | `WH_KEYBOARD_LL` as the MVP keyboard observer | Accepted (provisional) |
+| [0007](0007-production-dictionary.md) | Production dictionary source and embedded FST | Accepted |
 
 Decisions ADR-003 through ADR-006 are currently recorded inline in
 [`blueprint.md`](../../blueprint.md) Section 23 and will be migrated into this

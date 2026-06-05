@@ -1982,7 +1982,7 @@ Plan status should be tracked in this table once implementation starts:
 | 06 | Done (code) | main | Coordinator wires observer→translate→session→engine→commit-gate→replacement; kill switch/pause; redacted metrics; `--run`. First working version. Real-app run + perf verification pending. |
 | 07 | Done | main | Default app-category exclusions (fail-closed), network/telemetry deny bans + clean dep audit, bounded dictionary input, privacy.md + threat-model.md. Behavioral 19.6 tests vs live matrix pending (Step 11). |
 | 08 | Done (code) | main | Config/persistence/startup/single-instance/CLI (08a, tested) + native tray icon & menu + `--background` (08b, FFI compiled). Rich multi-page settings dialog → file-based config.toml for MVP. Tray runtime + UI a11y verification pending. |
-| 09 | Not started |  |  |
+| 09 | Done | main | Reproducible dictionary-compiler + 30k-word production FST (288KB, public-domain sources, ADR-0007) embedded via include_bytes (no unsafe/mmap); sha256/version meta. Release latency p50 861µs/p95 3.85ms. |
 | 10 | Done (code) | main | Undo state machine (core) + executor undo, personal dictionary (words/forced/blocked, atomic files), session suppression, coordinator-wired. Lists are file-based for MVP. Live undo injection verification pending. |
 | 11 | Not started |  |  |
 | 12 | Not started |  |  |

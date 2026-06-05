@@ -22,7 +22,9 @@ ADR-0002) are important for expectations:
    this faithfully. Rich/web/Electron editors (many note apps, some markdown
    editors) often intercept or re-handle injected input, so the backspace/retype
    does not produce the expected result. Exact-range editing for those apps is the
-   purpose of the post-MVP **TSF adapter (Step 13)**.
+   purpose of the post-MVP **TSF adapter (Step 13)**. Note: installing that adapter
+   needs a **one-time administrator step** — TSF text services register machine-wide
+   (HKLM), like every IME — so `langcheck --register-tsf` self-elevates via UAC.
 3. **Undo is forgiving.** Pressing Backspace immediately after a correction
    restores your original word. A single such rejection only restores — it does
    *not* disable the correction — so a stray Backspace won't silently stop

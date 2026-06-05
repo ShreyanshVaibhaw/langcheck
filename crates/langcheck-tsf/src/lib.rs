@@ -11,34 +11,40 @@
 //! - **No language logic or persistence here.** The dictionary, ranking, and
 //!   confidence policy stay in the broker; this adapter only observes a token and
 //!   asks the broker (over same-user IPC, added next) what to do.
-//! - **Kill switch + opt-in.** It is never registered or enabled by default.
+//! - **Opt-in + elevation.** Never registered by default. TSF text-service
+//!   registration is *machine-wide* and needs administrator elevation (like every
+//!   IME); the broker's `--register-tsf` self-elevates.
 //!
-//! STATUS: foundation only. The text input processor is currently a **no-op** — it
-//! loads and activates without touching input — so it is safe to register for
-//! testing. Focus tracking, edit-session replacement, and broker IPC are added in
-//! subsequent commits, each behind the fail-open contract. None of this is
-//! runtime-verified yet; a buggy in-process COM server can destabilise host apps,
-//! so it requires dedicated host-process testing before real use.
+//! STATUS: the COM server + per-machine TSF registration are implemented and
+//! **verified end-to-end on a real desktop** — an elevated register/unregister
+//! round-trip writes and cleanly removes the HKLM TIP + HKLM CLSID with no crash.
+//! The text input processor itself is still a **no-op** (it activates without
+//! touching input), so an activated profile cannot disturb host typing. Focus
+//! tracking, edit-session replacement, and broker IPC come next, each behind the
+//! fail-open contract; that in-process edit logic is the part still requiring
+//! dedicated host-process testing, since a bug there can destabilise host apps.
 
 // COM/FFI requires `unsafe`; enforce a `// SAFETY:` comment on every unsafe block
 // (blueprint.md Section 12.4) rather than forbidding it.
 #![deny(clippy::undocumented_unsafe_blocks)]
 
 use core::ffi::c_void;
-use std::sync::atomic::{AtomicI32, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicI32, Ordering};
 
-use windows::core::{implement, IUnknown, Interface, Result, GUID, HRESULT, PCWSTR};
+use windows::core::{implement, Error, IUnknown, Interface, Result, GUID, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{
-    BOOL, CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_FAIL, HINSTANCE, HMODULE, MAX_PATH,
-    S_FALSE, S_OK,
+    BOOL, CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, HMODULE, MAX_PATH, S_FALSE, S_OK,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, IClassFactory, IClassFactory_Impl,
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
-use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
+use windows::Win32::System::LibraryLoader::{
+    GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+};
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
+    RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW, HKEY, HKEY_LOCAL_MACHINE,
     KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ,
 };
 use windows::Win32::UI::TextServices::{
@@ -154,16 +160,24 @@ extern "system" fn DllCanUnloadNow() -> HRESULT {
 }
 
 // ---------------------------------------------------------------------------
-// Per-user registration (HKCU only; reversible).
+// Registration (machine-wide; requires elevation; reversible).
 //
 // Installing writes (a) the COM in-process server CLSID under
-// HKCU\Software\Classes\CLSID and (b) a TSF keyboard-TIP profile via
-// ITfInputProcessorProfiles + ITfCategoryMgr. Removal undoes both. This only
-// installs/removes the registration; enabling or disabling the adapter at
-// runtime without uninstalling is the broker's kill switch, added later.
+// HKLM\Software\Classes\CLSID and (b) a TSF keyboard-TIP profile via
+// ITfInputProcessorProfiles + ITfCategoryMgr (which write under HKLM\...\CTF).
+// Removal undoes both.
 //
-// Nothing here runs by default — the broker invokes DllRegisterServer /
-// DllUnregisterServer (or regsvr32) explicitly, and only after the user opts in.
+// IMPORTANT: TSF text-service registration is *machine-wide* and needs
+// administrator elevation — verified empirically: a non-elevated process cannot
+// write HKLM\SOFTWARE\Microsoft\CTF and ITfInputProcessorProfiles::Register then
+// fails with E_FAIL. This matches every IME (admin installers). The broker's
+// `--register-tsf` self-elevates; nothing here runs by default and the adapter
+// is opt-in only.
+//
+// Step-failure HRESULTs (0x8004_200N): 1=module path, 2=create profiles,
+// 3=create category mgr, 4=Register, 5=AddLanguageProfile, 6=RegisterCategory,
+// 7=COM CLSID registry write. Only the numeric code survives the DLL boundary,
+// so each step has a distinct code to localise a failure without a debugger.
 // ---------------------------------------------------------------------------
 
 /// Profile GUID for the single en-US language profile. Fixed once registered.
@@ -175,17 +189,10 @@ const LANGID_EN_US: u16 = 0x0409;
 /// Human-readable description shown for the text service / profile.
 const SERVICE_DESCRIPTION: &str = "LangCheck";
 
-/// Module handle of this DLL, captured in `DllMain` (stored as an `isize`).
-static MODULE: AtomicIsize = AtomicIsize::new(0);
-
-/// DLL entry point: record our own module handle so we can resolve our path.
-#[no_mangle]
-extern "system" fn DllMain(instance: HINSTANCE, reason: u32, _reserved: *mut c_void) -> BOOL {
-    const DLL_PROCESS_ATTACH: u32 = 1;
-    if reason == DLL_PROCESS_ATTACH {
-        MODULE.store(instance.0 as isize, Ordering::SeqCst);
-    }
-    BOOL(1)
+/// Distinct HRESULT per registration step. Only the numeric code survives the
+/// DLL boundary, so a unique code per step is how a failure is localised.
+fn step_error(step: u32) -> Error {
+    Error::from_hresult(HRESULT((0x8004_2000u32 | step) as i32))
 }
 
 /// UTF-16, NUL-terminated copy of `s` (for registry strings / `PCWSTR`).
@@ -219,8 +226,24 @@ fn guid_braced(g: &GUID) -> String {
 }
 
 /// Full path to this DLL as a NUL-terminated UTF-16 string, or `None` on failure.
+///
+/// Resolves our own module via `GetModuleHandleExW(FROM_ADDRESS)` using the
+/// address of this function — robust whether or not the runtime calls `DllMain`.
 fn module_path() -> Option<Vec<u16>> {
-    let module = HMODULE(MODULE.load(Ordering::SeqCst) as *mut c_void);
+    let mut module = HMODULE::default();
+    // SAFETY: with FROM_ADDRESS, the second argument is an address *inside* this
+    // module (we pass this function's address cast to PCWSTR); `module` is written
+    // on success and the refcount is left unchanged.
+    let resolved = unsafe {
+        GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            PCWSTR(module_path as *const () as *const u16),
+            &mut module,
+        )
+    };
+    if resolved.is_err() {
+        return None;
+    }
     let mut buf = [0u16; MAX_PATH as usize];
     // SAFETY: `buf` is a valid, sized output buffer; `module` is our own handle.
     let len = unsafe { GetModuleFileNameW(module, &mut buf) } as usize;
@@ -232,17 +255,17 @@ fn module_path() -> Option<Vec<u16>> {
     Some(path)
 }
 
-/// Write the COM in-process-server CLSID key (per-user) pointing at this DLL.
+/// Write the COM in-process-server CLSID key (machine-wide) pointing at this DLL.
 fn write_com_registration(dll_path: &[u16]) -> Result<()> {
     let subkey = wide_z(&format!(
         "Software\\Classes\\CLSID\\{}\\InprocServer32",
         guid_braced(&CLSID_LANGCHECK_TSF)
     ));
     let mut hkey = HKEY::default();
-    // SAFETY: valid HKCU root, NUL-terminated subkey, and `hkey` out-param.
+    // SAFETY: valid HKLM root, NUL-terminated subkey, and `hkey` out-param.
     unsafe {
         RegCreateKeyExW(
-            HKEY_CURRENT_USER,
+            HKEY_LOCAL_MACHINE,
             PCWSTR(subkey.as_ptr()),
             0,
             PCWSTR::null(),
@@ -279,42 +302,59 @@ fn write_com_registration(dll_path: &[u16]) -> Result<()> {
     Ok(())
 }
 
-/// Delete the per-user COM CLSID subtree for this service.
+/// Delete the machine-wide COM CLSID subtree for this service.
 fn delete_com_registration() -> Result<()> {
     let subkey = wide_z(&format!(
         "Software\\Classes\\CLSID\\{}",
         guid_braced(&CLSID_LANGCHECK_TSF)
     ));
-    // SAFETY: valid HKCU root and NUL-terminated subkey.
-    unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, PCWSTR(subkey.as_ptr())).ok() }
+    // SAFETY: valid HKLM root and NUL-terminated subkey.
+    unsafe { RegDeleteTreeW(HKEY_LOCAL_MACHINE, PCWSTR(subkey.as_ptr())).ok() }
 }
 
 /// Register the text service as an en-US keyboard TIP with TSF. COM must be
 /// initialised by the caller.
 fn register_tsf_profile() -> Result<()> {
-    // SAFETY: COM is initialised; the CLSIDs are valid TSF singletons.
+    // SAFETY: COM is initialised; the CLSID is a valid TSF singleton.
     let profiles: ITfInputProcessorProfiles =
-        unsafe { CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER) }?;
-    // SAFETY: as above.
-    let category: ITfCategoryMgr =
-        unsafe { CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER) }?;
+        unsafe { CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER) }
+            .map_err(|_| step_error(2))?;
     let description: Vec<u16> = SERVICE_DESCRIPTION.encode_utf16().collect();
+    // A valid empty icon path: a single NUL. `&[]` would hand the API a dangling
+    // (non-null, zero-length) pointer, which is unsafe to pass across FFI.
+    let empty_icon: [u16; 1] = [0];
     // SAFETY: every pointer references a const or a local valid for the call.
     unsafe {
-        profiles.Register(&CLSID_LANGCHECK_TSF)?;
-        profiles.AddLanguageProfile(
-            &CLSID_LANGCHECK_TSF,
-            LANGID_EN_US,
-            &PROFILE_LANGCHECK_TSF,
-            description.as_slice(),
-            &[],
-            0,
-        )?;
-        category.RegisterCategory(
-            &CLSID_LANGCHECK_TSF,
-            &GUID_TFCAT_TIP_KEYBOARD,
-            &CLSID_LANGCHECK_TSF,
-        )?;
+        profiles
+            .Register(&CLSID_LANGCHECK_TSF)
+            .map_err(|_| step_error(4))?;
+        profiles
+            .AddLanguageProfile(
+                &CLSID_LANGCHECK_TSF,
+                LANGID_EN_US,
+                &PROFILE_LANGCHECK_TSF,
+                description.as_slice(),
+                &empty_icon,
+                0,
+            )
+            .map_err(|_| step_error(5))?;
+    }
+    // Create the category manager AFTER the profile registration, then register
+    // the keyboard category. Creating it earlier and calling it post-registration
+    // faulted (a stale category-manager reference once TSF state changed).
+    // SAFETY: COM is initialised; the CLSID is a valid TSF singleton.
+    let category: ITfCategoryMgr =
+        unsafe { CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER) }
+            .map_err(|_| step_error(3))?;
+    // SAFETY: every pointer references a const valid for the call.
+    unsafe {
+        category
+            .RegisterCategory(
+                &CLSID_LANGCHECK_TSF,
+                &GUID_TFCAT_TIP_KEYBOARD,
+                &CLSID_LANGCHECK_TSF,
+            )
+            .map_err(|_| step_error(6))?;
     }
     Ok(())
 }
@@ -357,8 +397,8 @@ fn with_com<F: FnOnce() -> Result<()>>(op: F) -> Result<()> {
 #[no_mangle]
 extern "system" fn DllRegisterServer() -> HRESULT {
     let outcome = (|| {
-        let dll_path = module_path().ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?;
-        write_com_registration(&dll_path)?;
+        let dll_path = module_path().ok_or_else(|| step_error(1))?;
+        write_com_registration(&dll_path).map_err(|_| step_error(7))?;
         with_com(register_tsf_profile)
     })();
     match outcome {

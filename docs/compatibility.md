@@ -65,6 +65,14 @@ Notes: the broker still makes every correction decision (same conservative engin
 the MVP), so words it isn't confident about are left alone. The adapter is fail-open
 — if the broker isn't running or anything errors, your text is left untouched.
 
+**Known limitation (pending gate, ADR-0008):** with `--background` running, the MVP
+`SendInput` path and the TSF path are both active. In rich/web editors they don't
+collide (SendInput no-ops there — the reason TSF exists), but in a *plain* field
+with the LangCheck TIP active both could try to correct the same word. Until the
+two paths are coordinated, the safe pattern is to switch to the LangCheck input
+method only in the rich/web editors that need it, or use `--broker-serve` (TSF only,
+no MVP path) while testing. `--tsf-disable` turns the TSF path off entirely.
+
 ## Levels
 
 | Level | Meaning |

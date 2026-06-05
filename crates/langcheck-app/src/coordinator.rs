@@ -284,8 +284,14 @@ impl Coordinator {
             focus_unchanged: self.shared.focus_id.load(Ordering::SeqCst) == word.focus_id,
             generation_fresh: input::generation() == boundary_gen,
         };
-        if let CommitGate::Cancel(_) = commit_gate(&ctx) {
+        if let CommitGate::Cancel(reason) = commit_gate(&ctx) {
             Metrics::inc(&self.metrics.commits_cancelled);
+            match reason {
+                CancelReason::StaleGeneration => Metrics::inc(&self.metrics.cancel_stale),
+                CancelReason::FocusChanged => Metrics::inc(&self.metrics.cancel_focus),
+                CancelReason::Unsafe => Metrics::inc(&self.metrics.cancel_unsafe),
+                CancelReason::Disabled | CancelReason::Paused | CancelReason::NotEligible => {}
+            }
             return;
         }
 
@@ -351,6 +357,7 @@ impl Coordinator {
         let pair = (normalized, normalize_lookup(&candidate.replacement));
         if self.personal.is_blocked(&pair.0, &pair.1) || self.session_blocklist.contains(&pair) {
             Metrics::inc(&self.metrics.commits_cancelled);
+            Metrics::inc(&self.metrics.cancel_blocked);
             return;
         }
 
@@ -358,6 +365,7 @@ impl Coordinator {
         // any newer physical input arrived, cancel rather than apply stale work.
         if input::generation() != boundary_gen {
             Metrics::inc(&self.metrics.commits_cancelled);
+            Metrics::inc(&self.metrics.cancel_stale);
             return;
         }
 

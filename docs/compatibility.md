@@ -6,6 +6,29 @@ are provisional**: they reflect the intended/default behavior and must be confir
 by the on-hardware app-matrix run described under "Manual gates" (which the build
 environment cannot perform). See `blueprint.md` Section 22.
 
+## How correction behaves (and how to diagnose it)
+
+Two consequences of the MVP design (post-boundary `SendInput` replacement,
+ADR-0002) are important for expectations:
+
+1. **It corrects after you pause.** A correction commits only if the word + boundary
+   is still your most recent keystroke. If you keep typing the next word
+   immediately, the newer keystrokes invalidate the (now stale) edit and it is
+   cancelled — applying it would delete the wrong characters because the caret has
+   moved. So a typo is fixed when you type `word` + space and **pause briefly**, not
+   mid-flow. This is intentional (precision/safety over recall).
+2. **It is reliable only in fields that accept synthetic keystrokes.** Replacement
+   is backspaces + Unicode input via `SendInput`. Plain Win32 `Edit` fields handle
+   this faithfully. Rich/web/Electron editors (many note apps, some markdown
+   editors) often intercept or re-handle injected input, so the backspace/retype
+   does not produce the expected result. Exact-range editing for those apps is the
+   purpose of the post-MVP **TSF adapter (Step 13)**.
+
+**Diagnosing:** `langcheck --run` prints a per-reason cancellation breakdown, e.g.
+`cancelled=12 [stale=12 focus=0 unsafe=0 blocked=0]`. `stale` dominating means
+fluent typing — pause after the word. `unsafe`/`focus` mean the field/app was not a
+safe capture target. `langcheck --spike` shows the live focus classification per app.
+
 ## Levels
 
 | Level | Meaning |
@@ -25,6 +48,7 @@ environment cannot perform). See `blueprint.md` Section 22.
 | Microsoft Edge text area | LL hook | UIA `Document`/`Edit` | `SendInput` | **Supported** (confirm) | As above. |
 | Microsoft Word | LL hook | UIA `Document` | `SendInput` | **Suggestion only** (confirm) | Autolayout/autocorrect interactions; verify before enabling auto. |
 | Chat field (Slack/Teams/etc.) | LL hook | UIA varies | `SendInput` | **Supported** (confirm) | Electron UIA quality varies. |
+| Markdown / web / Electron note editors | LL hook | UIA `Document`/varies | `SendInput` (unreliable) | **Suggestion only** | Field-tested: synthetic-keystroke replacement is often intercepted/undone. Exact-range editing needs the TSF adapter (Step 13). |
 | Windows Terminal / cmd / PowerShell | — | — | — | **Disabled by default** | `policy.rs` exclusion (destructive/non-prose). |
 | Code editors / IDEs (VS Code, JetBrains, …) | — | — | — | **Disabled by default** | `policy.rs` exclusion (code, not prose). |
 | Password managers (KeePass, 1Password, …) | — | — | — | **Disabled by default** | `policy.rs` exclusion. |

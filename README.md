@@ -7,10 +7,28 @@ in fields it can positively confirm are safe prose, and applies **only
 high-confidence** spelling corrections after a safe word boundary — with an
 immediate undo. It has **no network capability of any kind**.
 
-> **Status:** early bootstrap (delivery **Step 00**). The Rust workspace, quality
-> gates, and crate skeleton exist; keyboard observation and autocorrection are not
-> implemented yet. See [`blueprint.md`](blueprint.md) Section 24 for the full
-> delivery plan and Section 27 for live step status.
+> **Status:** MVP feature set built (delivery Steps 00–10, CI-green): keyboard
+> observer, UI-Automation focus safety, the offline 30k-word compact-FST engine,
+> conservative ranking/confidence, `SendInput` replacement, tray + persistence,
+> immediate undo, and the personal dictionary. Steps 11–12 (compatibility/perf
+> hardening, signed installer) need on-hardware verification and release logistics;
+> Step 13 (TSF adapter) is post-MVP. See [`blueprint.md`](blueprint.md) Section 27
+> for live step status and [`docs/compatibility.md`](docs/compatibility.md) for
+> how correction behaves and which apps are supported.
+
+## Running it
+
+```powershell
+cargo build --release
+.\target\release\langcheck.exe --background   # tray app (right-click the tray icon)
+.\target\release\langcheck.exe --run          # console mode with live metrics
+```
+
+A typo is corrected when you type a word, then **space/period, then pause briefly**
+(see "How correction behaves" in [`docs/compatibility.md`](docs/compatibility.md)).
+Correction is reliable in standard Win32 text fields; rich/web editors are
+suggestion-only pending the TSF adapter. Sensitive fields, terminals, password
+managers, and elevated windows are never touched.
 
 ## Non-negotiable invariants
 

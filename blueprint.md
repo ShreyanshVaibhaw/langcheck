@@ -1984,7 +1984,7 @@ Plan status should be tracked in this table once implementation starts:
 | 08 | Done (code) | main | Config/persistence/startup/single-instance/CLI (08a, tested) + native tray icon & menu + `--background` (08b, FFI compiled). Rich multi-page settings dialog → file-based config.toml for MVP. Tray runtime + UI a11y verification pending. |
 | 09 | Done | main | Reproducible dictionary-compiler + 30k-word production FST (288KB, public-domain sources, ADR-0007) embedded via include_bytes (no unsafe/mmap); sha256/version meta. Release latency p50 861µs/p95 3.85ms. |
 | 10 | Done (code) | main | Undo state machine (core) + executor undo, personal dictionary (words/forced/blocked, atomic files), session suppression, coordinator-wired. Lists are file-based for MVP. Live undo injection verification pending. |
-| 11 | Scaffolding | main | Compatibility matrix + perf summary (measured latencies) + enforced default-disabled policies documented. Manual gates (app matrix, low-spec, 8h stability, idle CPU/mem) pending — see docs/compatibility.md. |
+| 11 | Scaffolding | main | Compatibility matrix + perf summary + enforced default-disabled policies + per-reason cancel diagnostics (`--run`) + honest correct-on-pause/rich-editor behavior docs. Manual gates (app matrix, low-spec, 8h stability, idle CPU/mem) pending — see docs/compatibility.md. |
 | 12 | Scaffolding | main | Per-user install.ps1/uninstall.ps1 (no admin, %LOCALAPPDATA%, reversible startup, clean uninstall) + packaging/README release process. Manual gates (code-signing cert, SBOM, clean-machine install testing) pending. |
 | 13 | Not started |  |  |
 | 14 | Not started |  |  |

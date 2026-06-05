@@ -29,6 +29,14 @@ pub struct Metrics {
     pub replace_failures: AtomicU64,
     /// Commits cancelled by a final safety check (stale, focus change, unsafe...).
     pub commits_cancelled: AtomicU64,
+    /// Cancelled because newer input arrived (fluent typing — pause to let it land).
+    pub cancel_stale: AtomicU64,
+    /// Cancelled because focus changed before commit.
+    pub cancel_focus: AtomicU64,
+    /// Cancelled because the field was no longer capture-safe.
+    pub cancel_unsafe: AtomicU64,
+    /// Cancelled because the pair is blocked or session-suppressed (undo).
+    pub cancel_blocked: AtomicU64,
     /// Corrections reversed by immediate undo.
     pub corrections_undone: AtomicU64,
 }
@@ -50,6 +58,10 @@ impl Metrics {
             corrections_applied: self.corrections_applied.load(Ordering::Relaxed),
             replace_failures: self.replace_failures.load(Ordering::Relaxed),
             commits_cancelled: self.commits_cancelled.load(Ordering::Relaxed),
+            cancel_stale: self.cancel_stale.load(Ordering::Relaxed),
+            cancel_focus: self.cancel_focus.load(Ordering::Relaxed),
+            cancel_unsafe: self.cancel_unsafe.load(Ordering::Relaxed),
+            cancel_blocked: self.cancel_blocked.load(Ordering::Relaxed),
             corrections_undone: self.corrections_undone.load(Ordering::Relaxed),
         }
     }
@@ -67,6 +79,10 @@ pub struct MetricsSnapshot {
     pub corrections_applied: u64,
     pub replace_failures: u64,
     pub commits_cancelled: u64,
+    pub cancel_stale: u64,
+    pub cancel_focus: u64,
+    pub cancel_unsafe: u64,
+    pub cancel_blocked: u64,
     pub corrections_undone: u64,
 }
 

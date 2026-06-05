@@ -16,6 +16,7 @@ licensing, or startup behavior** require an ADR.
 | [0002](0002-mvp-keyboard-observer.md) | `WH_KEYBOARD_LL` as the MVP keyboard observer | Accepted (provisional) |
 | [0007](0007-production-dictionary.md) | Production dictionary source and embedded FST | Accepted |
 | [0008](0008-tsf-precision-adapter.md) | TSF precision adapter for rich/web editors | Accepted (host-verified; app-matrix pending) |
+| [0009](0009-defer-context-grammar.md) | Defer optional context/grammar (Step 14) | Accepted (deferred; revisitable) |
 
 Decisions ADR-003 through ADR-006 are currently recorded inline in
 [`blueprint.md`](../../blueprint.md) Section 23 and will be migrated into this

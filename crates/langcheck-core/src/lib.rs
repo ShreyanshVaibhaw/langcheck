@@ -34,3 +34,4 @@ pub use session::{
     Boundary, ResetReason, Session, SessionConfig, SessionEvent, SessionOutcome, WordSnapshot,
 };
 pub use token::{case_pattern, restore_case, CasePattern};
+pub use undo::{PendingCorrection, UndoDecision, UndoState};

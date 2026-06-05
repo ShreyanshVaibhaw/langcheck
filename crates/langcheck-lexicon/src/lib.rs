@@ -32,6 +32,7 @@ pub mod fake;
 pub mod windows_spell;
 
 pub use compact_fst::CompactFstLexicon;
+pub use personal::PersonalDictionary;
 
 /// Maximum number of candidates a lexicon backend may return for one query
 /// (`blueprint.md` Section 8.6).

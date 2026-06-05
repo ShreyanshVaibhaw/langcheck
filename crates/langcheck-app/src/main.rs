@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use langcheck_core::Boundary;
 use langcheck_lexicon::compact_fst::CompactFstLexicon;
+use langcheck_lexicon::PersonalDictionary;
 use langcheck_windows::focus::{foreground_window_id, FieldClass, FocusInspector};
 use langcheck_windows::input::{self, LowLevelKeyboardObserver};
 use langcheck_windows::replace::{
@@ -30,7 +31,7 @@ use langcheck_windows::tray::{self, TrayHandler, TrayStatus};
 
 use std::path::PathBuf;
 
-use crate::config::CorrectionMode;
+use crate::config::{Config, CorrectionMode};
 use crate::coordinator::{Coordinator, SharedState};
 use crate::diagnostics::Metrics;
 
@@ -121,7 +122,7 @@ fn run_background() {
     let metrics = Arc::new(Metrics::default());
 
     let (observer, focus_thread, coordinator_thread) =
-        match start_engine(Box::new(lexicon), &shared, &metrics) {
+        match start_engine(Box::new(lexicon), &config, &shared, &metrics) {
             Some(parts) => parts,
             None => return,
         };
@@ -221,7 +222,7 @@ fn run_autocorrect() {
     let metrics = Arc::new(Metrics::default());
 
     let (observer, focus_thread, coordinator_thread) =
-        match start_engine(Box::new(lexicon), &shared, &metrics) {
+        match start_engine(Box::new(lexicon), &config, &shared, &metrics) {
             Some(parts) => parts,
             None => return,
         };
@@ -267,6 +268,7 @@ fn run_autocorrect() {
 /// `--background`.
 fn start_engine(
     lexicon: Box<dyn langcheck_lexicon::LexiconProvider>,
+    config: &Config,
     shared: &Arc<SharedState>,
     metrics: &Arc<Metrics>,
 ) -> Option<(
@@ -274,6 +276,10 @@ fn start_engine(
     std::thread::JoinHandle<()>,
     std::thread::JoinHandle<()>,
 )> {
+    let personal = persistence::state_dir()
+        .map(|dir| PersonalDictionary::load_dir(&dir))
+        .unwrap_or_default();
+    let undo_window = Duration::from_millis(config.undo_window_ms);
     let (tx, rx) = sync_channel(256);
     let observer = match LowLevelKeyboardObserver::start(tx) {
         Ok(observer) => observer,
@@ -310,7 +316,13 @@ fn start_engine(
     let coordinator_shared = Arc::clone(shared);
     let coordinator_metrics = Arc::clone(metrics);
     let coordinator_thread = std::thread::spawn(move || {
-        let mut coordinator = Coordinator::new(lexicon, coordinator_shared, coordinator_metrics);
+        let mut coordinator = Coordinator::new(
+            lexicon,
+            personal,
+            undo_window,
+            coordinator_shared,
+            coordinator_metrics,
+        );
         coordinator.run(&rx);
     });
 

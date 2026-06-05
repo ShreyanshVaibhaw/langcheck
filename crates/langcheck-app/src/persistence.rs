@@ -27,6 +27,11 @@ pub fn config_path() -> Option<PathBuf> {
     data_dir().map(|dir| dir.join("config.toml"))
 }
 
+/// `%LOCALAPPDATA%\LangCheck\state` — user words, rules, and exclusions.
+pub fn state_dir() -> Option<PathBuf> {
+    data_dir().map(|dir| dir.join("state"))
+}
+
 /// Write `contents` to `path` atomically: write a temporary sibling, then rename
 /// over the destination (replacing it on Windows). Creates the parent directory.
 pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {

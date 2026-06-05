@@ -29,6 +29,8 @@ pub struct Metrics {
     pub replace_failures: AtomicU64,
     /// Commits cancelled by a final safety check (stale, focus change, unsafe...).
     pub commits_cancelled: AtomicU64,
+    /// Corrections reversed by immediate undo.
+    pub corrections_undone: AtomicU64,
 }
 
 impl Metrics {
@@ -48,6 +50,7 @@ impl Metrics {
             corrections_applied: self.corrections_applied.load(Ordering::Relaxed),
             replace_failures: self.replace_failures.load(Ordering::Relaxed),
             commits_cancelled: self.commits_cancelled.load(Ordering::Relaxed),
+            corrections_undone: self.corrections_undone.load(Ordering::Relaxed),
         }
     }
 }
@@ -64,6 +67,7 @@ pub struct MetricsSnapshot {
     pub corrections_applied: u64,
     pub replace_failures: u64,
     pub commits_cancelled: u64,
+    pub corrections_undone: u64,
 }
 
 #[cfg(test)]

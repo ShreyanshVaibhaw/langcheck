@@ -146,6 +146,16 @@ pub trait ReplacementExecutor {
     /// the clipboard, never targets a higher-integrity window, and never retries a
     /// partial insertion.
     fn execute(&mut self, plan: &ReplacementPlan) -> Result<UndoTransaction, ReplaceError>;
+
+    /// Reverse a correction immediately after the user's rejecting Backspace: the
+    /// boundary has already been deleted by that Backspace, so erase the remaining
+    /// `replacement` and restore `original` followed by the `boundary`.
+    fn execute_undo(
+        &mut self,
+        original: &str,
+        replacement: &str,
+        boundary: Boundary,
+    ) -> Result<(), ReplaceError>;
 }
 
 /// The MVP executor: a single `SendInput` batch with injected-event marking.
@@ -164,6 +174,48 @@ impl ReplacementExecutor for SendInputExecutor {
             boundary: plan.boundary,
         })
     }
+
+    fn execute_undo(
+        &mut self,
+        original: &str,
+        replacement: &str,
+        boundary: Boundary,
+    ) -> Result<(), ReplaceError> {
+        let actions = build_undo_key_actions(original, replacement, boundary)?;
+        check_foreground_target()?;
+        send_actions(&actions)
+    }
+}
+
+/// Build the keystroke sequence to undo a correction: erase the `replacement`
+/// (its boundary was already removed by the user's Backspace) and type the
+/// `original` followed by the `boundary`. Pure and unit-tested.
+pub fn build_undo_key_actions(
+    original: &str,
+    replacement: &str,
+    boundary: Boundary,
+) -> Result<Vec<KeyAction>, ReplaceError> {
+    if original.is_empty() {
+        return Err(ReplaceError::EmptyReplacement);
+    }
+    if !original.is_ascii() || !replacement.is_ascii() {
+        return Err(ReplaceError::NotAscii);
+    }
+    let original_len = original.chars().count();
+    let replacement_len = replacement.chars().count();
+    if original_len > MAX_REPLACEMENT_CHARS || replacement_len > MAX_REPLACEMENT_CHARS {
+        return Err(ReplaceError::TooLong);
+    }
+
+    let mut actions = Vec::with_capacity(replacement_len + original_len + 1);
+    for _ in 0..replacement_len {
+        actions.push(KeyAction::Backspace);
+    }
+    for ch in original.chars() {
+        actions.push(KeyAction::Type(ch));
+    }
+    actions.push(KeyAction::Type(boundary.as_char()));
+    Ok(actions)
 }
 
 /// Inject `text` as marked Unicode keystrokes (no backspaces). Intended for the
@@ -304,5 +356,27 @@ mod tests {
         // Each action is a down+up pair, so SendInput's expected count is 2 * actions.
         let actions = build_key_actions("teh", "the", Boundary::Space).unwrap();
         assert_eq!(actions.len(), 4 + 3 + 1); // 4 backspaces + "the" + space
+    }
+
+    #[test]
+    fn undo_erases_replacement_and_restores_original() {
+        // Boundary already removed by the user's Backspace: erase "the" (3), then
+        // type "teh" + space.
+        let actions = build_undo_key_actions("teh", "the", Boundary::Space).unwrap();
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|a| **a == KeyAction::Backspace)
+                .count(),
+            3
+        );
+        let typed: String = actions
+            .iter()
+            .filter_map(|a| match a {
+                KeyAction::Type(c) => Some(*c),
+                KeyAction::Backspace => None,
+            })
+            .collect();
+        assert_eq!(typed, "teh ");
     }
 }

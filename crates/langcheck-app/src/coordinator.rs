@@ -14,16 +14,19 @@
 //!
 //! Implemented in delivery Step 06 (End-to-End Conservative Autocorrect).
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use langcheck_core::classify::normalize_lookup;
 use langcheck_core::{
-    evaluate, CandidateSource, CandidateWord, ConfidencePolicy, CorrectionDecision, RankWeights,
-    Session, SessionConfig, SessionEvent, SessionOutcome, WordSnapshot,
+    evaluate, CandidateSource, CandidateWord, ConfidencePolicy, CorrectionDecision,
+    PendingCorrection, RankWeights, Session, SessionConfig, SessionEvent, SessionOutcome,
+    UndoDecision, UndoState, WordSnapshot,
 };
-use langcheck_lexicon::{LanguageTag, LexiconProvider, MAX_LEXICON_CANDIDATES};
+use langcheck_lexicon::{LanguageTag, LexiconProvider, PersonalDictionary, MAX_LEXICON_CANDIDATES};
 use langcheck_windows::input::translate::{KeyTranslator, Translated};
 use langcheck_windows::input::{self, InputEvent};
 use langcheck_windows::replace::{ReplacementExecutor, ReplacementPlan, SendInputExecutor};
@@ -136,16 +139,24 @@ pub struct Coordinator {
     session: Session,
     translator: KeyTranslator,
     lexicon: Box<dyn LexiconProvider>,
+    personal: PersonalDictionary,
     executor: SendInputExecutor,
     weights: RankWeights,
     policy: ConfidencePolicy,
     shared: Arc<SharedState>,
     metrics: Arc<Metrics>,
+    undo: UndoState,
+    undo_recorded_at: Option<Instant>,
+    undo_window: Duration,
+    /// Pairs rejected via undo this session; never re-applied until restart.
+    session_blocklist: HashSet<(String, String)>,
 }
 
 impl Coordinator {
     pub fn new(
         lexicon: Box<dyn LexiconProvider>,
+        personal: PersonalDictionary,
+        undo_window: Duration,
         shared: Arc<SharedState>,
         metrics: Arc<Metrics>,
     ) -> Self {
@@ -153,11 +164,16 @@ impl Coordinator {
             session: Session::new(SessionConfig::default()),
             translator: KeyTranslator::default(),
             lexicon,
+            personal,
             executor: SendInputExecutor,
             weights: RankWeights::default(),
             policy: ConfidencePolicy::default(),
             shared,
             metrics,
+            undo: UndoState::new(),
+            undo_recorded_at: None,
+            undo_window,
+            session_blocklist: HashSet::new(),
         }
     }
 
@@ -175,15 +191,42 @@ impl Coordinator {
     }
 
     fn process(&mut self, event: &InputEvent) {
-        // Reconcile focus: a foreground change resets the session before this key.
+        // Reconcile focus: a foreground change resets the session and clears undo.
         let current_focus = self.shared.focus_id.load(Ordering::SeqCst);
         if current_focus != self.session.focus_id() {
             self.session
                 .handle(SessionEvent::FocusChange(current_focus));
             Metrics::inc(&self.metrics.sessions_reset);
+            self.clear_undo();
         }
 
-        let session_event = match self.translator.translate(event) {
+        let translated = self.translator.translate(event);
+        if matches!(translated, Translated::Ignore) {
+            return; // modifier/ignored key: no token effect, not a "relevant" input
+        }
+
+        // Immediate-undo handling on the first relevant input after a correction.
+        if self.undo.has_pending() {
+            let expired = self
+                .undo_recorded_at
+                .is_some_and(|recorded| recorded.elapsed() > self.undo_window);
+            if expired {
+                self.clear_undo();
+            } else {
+                let is_backspace = matches!(translated, Translated::Backspace);
+                match self.undo.on_next_input(is_backspace, current_focus) {
+                    UndoDecision::Undo(correction) => {
+                        self.perform_undo(&correction);
+                        self.undo_recorded_at = None;
+                        return; // consume the Backspace
+                    }
+                    UndoDecision::Cleared => self.undo_recorded_at = None,
+                    UndoDecision::Nothing => {}
+                }
+            }
+        }
+
+        let session_event = match translated {
             Translated::Char(c) => SessionEvent::Char(c),
             Translated::Boundary(b) => SessionEvent::Boundary(b),
             Translated::Backspace => SessionEvent::Backspace,
@@ -196,8 +239,34 @@ impl Coordinator {
             SessionOutcome::Completed { word, boundary } => {
                 self.try_commit(&word, boundary, event.generation);
             }
-            SessionOutcome::Reset(_) => Metrics::inc(&self.metrics.sessions_reset),
+            SessionOutcome::Reset(_) => {
+                Metrics::inc(&self.metrics.sessions_reset);
+                self.clear_undo();
+            }
             SessionOutcome::Building(_) | SessionOutcome::Idle => {}
+        }
+    }
+
+    fn clear_undo(&mut self) {
+        self.undo.clear();
+        self.undo_recorded_at = None;
+    }
+
+    /// Reverse a just-applied correction and suppress the pair for the session.
+    fn perform_undo(&mut self, correction: &PendingCorrection) {
+        match self.executor.execute_undo(
+            &correction.original,
+            &correction.replacement,
+            correction.boundary,
+        ) {
+            Ok(()) => {
+                self.session_blocklist.insert((
+                    normalize_lookup(&correction.original),
+                    normalize_lookup(&correction.replacement),
+                ));
+                Metrics::inc(&self.metrics.corrections_undone);
+            }
+            Err(_) => Metrics::inc(&self.metrics.replace_failures),
         }
     }
 
@@ -221,12 +290,23 @@ impl Coordinator {
         }
 
         let deadline = Some(Instant::now() + Duration::from_millis(DECISION_DEADLINE_MS));
-        let is_known = self.lexicon.contains(LanguageTag::EnUs, &word.normalized);
-        let candidates: Vec<CandidateWord> = self
+        let normalized = word.normalized.clone();
+
+        // A user-forced pair overrides "known"-ness; otherwise a personal word or a
+        // dictionary word is treated as already correct and left alone.
+        let forced = self
+            .personal
+            .forced_correction(&normalized)
+            .map(str::to_owned);
+        let is_known = forced.is_none()
+            && (self.lexicon.contains(LanguageTag::EnUs, &normalized)
+                || self.personal.contains_word(&normalized));
+
+        let mut candidates: Vec<CandidateWord> = self
             .lexicon
             .candidates(
                 LanguageTag::EnUs,
-                &word.normalized,
+                &normalized,
                 MAX_LEXICON_CANDIDATES,
                 deadline,
             )
@@ -239,6 +319,14 @@ impl Coordinator {
                 source: CandidateSource::Lexicon,
             })
             .collect();
+        if let Some(forced) = &forced {
+            candidates.push(CandidateWord {
+                word: forced.clone(),
+                edit_distance: 1,
+                frequency: u32::MAX,
+                source: CandidateSource::UserPair,
+            });
+        }
 
         let decision = evaluate(
             word,
@@ -259,6 +347,13 @@ impl Coordinator {
             return;
         };
 
+        // Honour blocked pairs and session suppression (pairs rejected via undo).
+        let pair = (normalized, normalize_lookup(&candidate.replacement));
+        if self.personal.is_blocked(&pair.0, &pair.1) || self.session_blocklist.contains(&pair) {
+            Metrics::inc(&self.metrics.commits_cancelled);
+            return;
+        }
+
         // Re-check freshness after evaluation (which may have taken a moment): if
         // any newer physical input arrived, cancel rather than apply stale work.
         if input::generation() != boundary_gen {
@@ -273,10 +368,18 @@ impl Coordinator {
             replacement: candidate.replacement,
             boundary,
         };
-        // Partial/failed insertion is counted but never retried blindly. The undo
-        // transaction is wired into immediate-undo handling in Step 10.
+        // Partial/failed insertion is counted but never retried blindly.
         match self.executor.execute(&plan) {
-            Ok(_undo) => Metrics::inc(&self.metrics.corrections_applied),
+            Ok(_undo) => {
+                Metrics::inc(&self.metrics.corrections_applied);
+                self.undo.record(PendingCorrection {
+                    focus_id: plan.focus_id,
+                    original: plan.original.clone(),
+                    replacement: plan.replacement.clone(),
+                    boundary,
+                });
+                self.undo_recorded_at = Some(Instant::now());
+            }
             Err(_) => Metrics::inc(&self.metrics.replace_failures),
         }
     }

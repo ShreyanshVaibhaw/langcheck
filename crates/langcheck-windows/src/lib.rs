@@ -25,6 +25,7 @@ pub mod policy;
 pub mod replace;
 pub mod startup;
 pub mod tray;
+pub mod tsf;
 
 /// Marker stored in `dwExtraInfo` on every input event LangCheck injects, so the
 /// observer can recognise and ignore its own synthetic input and never recurse

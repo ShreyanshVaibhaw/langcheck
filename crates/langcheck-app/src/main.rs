@@ -47,6 +47,8 @@ fn main() {
         Some("--status") => show_status(),
         Some("--register-startup") => set_startup(true),
         Some("--unregister-startup") => set_startup(false),
+        Some("--register-tsf") => set_tsf(true),
+        Some("--unregister-tsf") => set_tsf(false),
         Some("--reset") => reset_state(),
         _ => println!(
             "LangCheck {} (bootstrap build).\n\
@@ -56,6 +58,8 @@ fn main() {
              langcheck --status             show enabled/mode/start-at-login state\n  \
              langcheck --register-startup   start LangCheck at sign-in (HKCU Run)\n  \
              langcheck --unregister-startup remove start-at-login\n  \
+             langcheck --register-tsf       install the experimental TSF adapter (per-user, opt-in)\n  \
+             langcheck --unregister-tsf     remove the TSF adapter\n  \
              langcheck --reset              delete all LangCheck state\n  \
              langcheck --spike              input/focus observer harness (ADR-0002)\n  \
              langcheck --replace-demo       SendInput replacement + integrity skip",
@@ -180,6 +184,45 @@ fn set_startup(enable: bool) {
         "start-at-login {}.",
         if enable { "enabled" } else { "disabled" }
     );
+}
+
+/// `--register-tsf` / `--unregister-tsf`: install or remove the post-MVP TSF
+/// precision adapter for the current user (opt-in; never automatic). Loads
+/// `langcheck_tsf.dll` from beside this executable and calls its self-
+/// (un)registration entry point in-process — no elevation, the real user's HKCU.
+fn set_tsf(enable: bool) {
+    let Some(dll) = tsf_dll_path() else {
+        eprintln!("could not locate langcheck_tsf.dll next to the executable.");
+        return;
+    };
+    if !dll.exists() {
+        eprintln!("TSF adapter not found: {}", dll.display());
+        eprintln!("(build the workspace so langcheck_tsf.dll sits beside langcheck.exe.)");
+        return;
+    }
+    let result = if enable {
+        langcheck_windows::tsf::register(&dll)
+    } else {
+        langcheck_windows::tsf::unregister(&dll)
+    };
+    match result {
+        Ok(()) if enable => {
+            println!("TSF adapter registered for the current user.");
+            println!("NOTE: experimental and currently a NO-OP (no edit logic yet) — it adds an");
+            println!("inert en-US input method. Remove it with `langcheck --unregister-tsf`.");
+        }
+        Ok(()) => println!("TSF adapter unregistered for the current user."),
+        Err(e) => eprintln!(
+            "failed to {} TSF adapter: {e}",
+            if enable { "register" } else { "unregister" }
+        ),
+    }
+}
+
+/// Full path to the TSF adapter DLL that ships beside `langcheck.exe`.
+fn tsf_dll_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join("langcheck_tsf.dll"))
 }
 
 /// `--reset`: delete all LangCheck state (config + user data).

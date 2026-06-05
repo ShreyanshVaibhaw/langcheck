@@ -1,0 +1,26 @@
+[package]
+name = "langcheck-ipc"
+description = "Same-user, local-only named-pipe transport for the LangCheck broker <-> TSF-adapter IPC channel. Deliberately minimal so the in-process TSF adapter need not depend on the broker's full Windows integration (hooks, UIA, tray)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Application workspace crate; not published to crates.io.
+publish = false
+
+[dependencies]
+langcheck-core = { path = "../langcheck-core" }
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+]

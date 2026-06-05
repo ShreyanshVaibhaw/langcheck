@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 langcheck-core = { path = "../langcheck-core" }
+langcheck-ipc = { path = "../langcheck-ipc" }
 langcheck-lexicon = { path = "../langcheck-lexicon" }
 langcheck-windows = { path = "../langcheck-windows" }
 serde = { version = "1", features = ["derive"] }

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/langcheck-core",
     "crates/langcheck-lexicon",
+    "crates/langcheck-ipc",
     "crates/langcheck-windows",
     "crates/langcheck-app",
     "crates/langcheck-bench",

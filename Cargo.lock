@@ -100,6 +100,7 @@ name = "langcheck-app"
 version = "0.0.0"
 dependencies = [
  "langcheck-core",
+ "langcheck-ipc",
  "langcheck-lexicon",
  "langcheck-windows",
  "serde",
@@ -119,6 +120,14 @@ name = "langcheck-core"
 version = "0.0.0"
 dependencies = [
  "langcheck-lexicon",
+]
+
+[[package]]
+name = "langcheck-ipc"
+version = "0.0.0"
+dependencies = [
+ "langcheck-core",
+ "windows",
 ]
 
 [[package]]

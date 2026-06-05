@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use langcheck_core::ipc::{Request, Response};
 use langcheck_core::{ConfidencePolicy, RankWeights};
+use langcheck_ipc::PipeServer;
 use langcheck_lexicon::{LexiconProvider, PersonalDictionary};
-use langcheck_windows::ipc::PipeServer;
 
 use crate::coordinator::SharedState;
 use crate::engine;

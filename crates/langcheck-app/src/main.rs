@@ -20,7 +20,7 @@ use std::sync::mpsc::{sync_channel, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::Duration;
 
-use langcheck_core::Boundary;
+use langcheck_core::{Boundary, IpcRequest, IpcResponse};
 use langcheck_lexicon::compact_fst::CompactFstLexicon;
 use langcheck_lexicon::PersonalDictionary;
 use langcheck_windows::focus::{foreground_window_id, FieldClass, FocusInspector};
@@ -51,6 +51,8 @@ fn main() {
         Some("--unregister-startup") => set_startup(false),
         Some("--register-tsf") => set_tsf(true),
         Some("--unregister-tsf") => set_tsf(false),
+        Some("--broker-serve") => run_broker_serve(),
+        Some("--broker-eval") => run_broker_eval(std::env::args().nth(2)),
         Some("--reset") => reset_state(),
         _ => println!(
             "LangCheck {} (bootstrap build).\n\
@@ -62,6 +64,8 @@ fn main() {
              langcheck --unregister-startup remove start-at-login\n  \
              langcheck --register-tsf       install the experimental TSF adapter (opt-in; UAC)\n  \
              langcheck --unregister-tsf     remove the TSF adapter\n  \
+             langcheck --broker-serve       run only the IPC broker server (TSF adapter channel)\n  \
+             langcheck --broker-eval WORD   ask the running broker about WORD (IPC client; diagnostic)\n  \
              langcheck --reset              delete all LangCheck state\n  \
              langcheck --spike              input/focus observer harness (ADR-0002)\n  \
              langcheck --replace-demo       SendInput replacement + integrity skip",
@@ -263,6 +267,46 @@ fn set_tsf(enable: bool) {
 fn tsf_dll_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     Some(exe.parent()?.join("langcheck_tsf.dll"))
+}
+
+/// `--broker-serve`: run only the IPC broker server in the foreground (no keyboard
+/// hook, no tray). Lets the TSF adapter channel be exercised on its own, and serves
+/// as a headless mode. Blocks until the process is stopped.
+fn run_broker_serve() {
+    let lexicon = match CompactFstLexicon::production_en_us() {
+        Ok(lexicon) => lexicon,
+        Err(e) => {
+            eprintln!("failed to load lexicon: {e}");
+            return;
+        }
+    };
+    let personal = persistence::state_dir()
+        .map(|dir| PersonalDictionary::load_dir(&dir))
+        .unwrap_or_default();
+    let shared = Arc::new(SharedState::new());
+    println!("LangCheck IPC broker serving on the per-user pipe. Press Ctrl-C to stop.");
+    tsf_broker::serve(shared, Box::new(lexicon), personal);
+}
+
+/// `--broker-eval WORD`: act as an IPC client and print the broker's decision for
+/// WORD (or send a Ping when no word is given). A diagnostic for the same-user IPC
+/// channel the TSF adapter uses; requires a running `--broker-serve`/`--background`.
+fn run_broker_eval(word: Option<String>) {
+    let request = match word {
+        Some(token) => IpcRequest::Evaluate {
+            token,
+            boundary: Boundary::Space,
+        },
+        None => IpcRequest::Ping,
+    };
+    match langcheck_ipc::request(&request) {
+        Ok(IpcResponse::Pong) => println!("pong"),
+        Ok(IpcResponse::Leave) => println!("leave (no correction)"),
+        Ok(IpcResponse::Replace { replacement }) => println!("replace -> {replacement}"),
+        Err(e) => eprintln!(
+            "broker eval failed: {e}\n(is `langcheck --broker-serve` or `--background` running?)"
+        ),
+    }
 }
 
 /// `--reset`: delete all LangCheck state (config + user data).

@@ -1,9 +1,11 @@
-//! Same-user, local-only named-pipe transport for broker IPC (the post-MVP TSF
-//! adapter <-> broker channel).
+//! `langcheck-ipc` — same-user, local-only named-pipe transport for the broker
+//! <-> TSF-adapter channel.
 //!
 //! The wire *protocol* (messages + encoding) lives in `langcheck-core::ipc`; this
-//! module is only the Windows transport. Three safety properties are enforced
-//! (`blueprint.md` Step 13: "same-user authenticated IPC", "reject remote
+//! crate is only the Windows transport, kept as a tiny standalone crate so the
+//! in-process TSF adapter can use it without depending on the broker's full Windows
+//! integration (`langcheck-windows`: hooks, UIA, tray). Three safety properties are
+//! enforced (`blueprint.md` Step 13: "same-user authenticated IPC", "reject remote
 //! named-pipe clients", "inside the current device and user session"):
 //!
 //! - **Same user.** The pipe is created with a DACL granting access only to the
@@ -13,6 +15,10 @@
 //! - **Bounded.** Fixed buffers; one message per exchange (message-mode pipe).
 //!
 //! The transport carries opaque bytes and contains no language logic.
+
+// FFI needs `unsafe`; require a `// SAFETY:` comment on every unsafe block instead
+// of forbidding it (blueprint.md Section 12.4).
+#![deny(clippy::undocumented_unsafe_blocks)]
 
 use core::ffi::c_void;
 

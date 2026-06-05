@@ -36,6 +36,7 @@
 
 use core::ffi::c_void;
 use std::cell::RefCell;
+use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use langcheck_core::ipc::{Request, Response};
@@ -60,9 +61,10 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::UI::TextServices::{
     CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfCategoryMgr,
-    ITfContext, ITfDocumentMgr, ITfInputProcessorProfiles, ITfSource, ITfTextInputProcessor,
-    ITfTextInputProcessor_Impl, ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl,
-    GUID_TFCAT_TIP_KEYBOARD,
+    ITfContext, ITfDocumentMgr, ITfEditRecord, ITfInputProcessorProfiles, ITfSource,
+    ITfTextEditSink, ITfTextEditSink_Impl, ITfTextInputProcessor, ITfTextInputProcessor_Impl,
+    ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl, GUID_TFCAT_TIP_KEYBOARD,
+    TF_DEFAULT_SELECTION, TF_SELECTION,
 };
 
 /// Fixed CLSID of the LangCheck text service. Must never change once registered.
@@ -83,22 +85,156 @@ fn release() {
 /// self-test confirm the focus sink registered without needing a host app).
 static ADVISE_OK: AtomicU32 = AtomicU32::new(0);
 
-/// Thread-manager event sink: observes focus/context changes. For now it only
-/// records focus events (fail-open, no edits); the per-context edit sink that
-/// detects typed words is layered on next. Every method returns `Ok` — a sink that
-/// errored back into TSF could destabilise the host's input.
-#[implement(ITfThreadMgrEventSink)]
-struct ThreadMgrSink;
+/// How many characters before the caret to read when detecting the just-typed word.
+const LOOKBACK_CHARS: i32 = 48;
 
-impl ThreadMgrSink {
+/// Map a trailing character to a sentence [`Boundary`], or `None` if it is not one.
+fn boundary_from_char(c: char) -> Option<Boundary> {
+    match c {
+        ' ' => Some(Boundary::Space),
+        '.' => Some(Boundary::Period),
+        ',' => Some(Boundary::Comma),
+        '?' => Some(Boundary::Question),
+        '!' => Some(Boundary::Exclamation),
+        ':' => Some(Boundary::Colon),
+        ';' => Some(Boundary::Semicolon),
+        _ => None,
+    }
+}
+
+/// Given the text ending at the caret, return the just-completed `(token, boundary)`
+/// if the last character is a boundary preceded by a non-empty token. Pure — the
+/// broker makes the actual correction decision, so this only does minimal framing.
+fn detect_token(text_before_caret: &str) -> Option<(String, Boundary)> {
+    let last = text_before_caret.chars().next_back()?;
+    let boundary = boundary_from_char(last)?;
+    let before = &text_before_caret[..text_before_caret.len() - last.len_utf8()];
+    let mut token: Vec<char> = before
+        .chars()
+        .rev()
+        .take_while(|c| !c.is_whitespace() && boundary_from_char(*c).is_none())
+        .collect();
+    token.reverse();
+    if token.is_empty() {
+        None
+    } else {
+        Some((token.into_iter().collect(), boundary))
+    }
+}
+
+/// Read the text immediately before the caret (read-only, within `ec`) and, if a
+/// word was just completed by a boundary, return it. Fail-open: any COM error → None.
+fn read_trailing_token(context: &ITfContext, ec: u32) -> Option<(String, Boundary)> {
+    let mut selection = [TF_SELECTION::default()];
+    let mut fetched = 0u32;
+    // SAFETY: read the current selection within the supplied read cookie `ec`.
+    unsafe { context.GetSelection(ec, TF_DEFAULT_SELECTION, &mut selection, &mut fetched) }.ok()?;
+    if fetched == 0 {
+        return None;
+    }
+    // SAFETY: take ownership of the range out of the ManuallyDrop; `selection` is
+    // not read again, so its Drop will not touch the moved-out value.
+    let range = unsafe { ManuallyDrop::take(&mut selection[0].range) }?;
+    let mut shifted = 0i32;
+    // SAFETY: move the start anchor back up to LOOKBACK_CHARS (read cookie; no halt
+    // condition). This adjusts our range object only, not the document.
+    let _ = unsafe { range.ShiftStart(ec, -LOOKBACK_CHARS, &mut shifted, std::ptr::null()) };
+    let mut buffer = [0u16; LOOKBACK_CHARS as usize];
+    let mut copied = 0u32;
+    // SAFETY: read the (now back-extended) range's text into `buffer`.
+    unsafe { range.GetText(ec, 0, &mut buffer, &mut copied) }.ok()?;
+    let text = String::from_utf16_lossy(&buffer[..copied as usize]);
+    detect_token(&text)
+}
+
+/// Per-context text-edit sink: after each edit it checks whether a word was just
+/// completed and, if so, asks the broker. READ-ONLY for now — it never modifies the
+/// document (the edit-session replacement is the next increment), so it cannot
+/// corrupt host text. Fail-open everywhere.
+#[implement(ITfTextEditSink)]
+struct EditSink;
+
+impl EditSink {
     fn new() -> Self {
         add_ref();
         Self
     }
 }
 
+impl Drop for EditSink {
+    fn drop(&mut self) {
+        release();
+    }
+}
+
+impl ITfTextEditSink_Impl for EditSink_Impl {
+    fn OnEndEdit(
+        &self,
+        context: Option<&ITfContext>,
+        ec: u32,
+        _record: Option<&ITfEditRecord>,
+    ) -> Result<()> {
+        if let Some(context) = context {
+            if let Some((token, boundary)) = read_trailing_token(context, ec) {
+                // Read-only increment: ask the broker (it records the request); the
+                // returned replacement is NOT applied yet.
+                let _ = ask_broker(&token, boundary);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Thread-manager event sink: tracks focus and advises an [`EditSink`] on the
+/// focused document's context. Fail-open — observing focus or failing to advise can
+/// never disturb the host.
+#[implement(ITfThreadMgrEventSink)]
+struct ThreadMgrSink {
+    /// The focused context's event source + our edit-sink cookie, so we can
+    /// unadvise when focus moves away or on teardown. `None` when not advised.
+    edit_advise: RefCell<Option<(ITfSource, u32)>>,
+}
+
+impl ThreadMgrSink {
+    fn new() -> Self {
+        add_ref();
+        Self {
+            edit_advise: RefCell::new(None),
+        }
+    }
+
+    /// Unadvise the current edit sink, if any.
+    fn unadvise_edit(&self) {
+        if let Some((source, cookie)) = self.edit_advise.borrow_mut().take() {
+            // SAFETY: `source`/`cookie` are exactly the pair returned by AdviseSink.
+            unsafe {
+                let _ = source.UnadviseSink(cookie);
+            }
+        }
+    }
+
+    /// Advise a fresh edit sink on the focused document's top context (fail-open).
+    fn advise_edit(&self, focus: &ITfDocumentMgr) {
+        self.unadvise_edit();
+        // SAFETY: GetTop returns the focused context (or an error if none).
+        let Ok(context) = (unsafe { focus.GetTop() }) else {
+            return;
+        };
+        let Ok(source) = context.cast::<ITfSource>() else {
+            return;
+        };
+        let sink: ITfTextEditSink = EditSink::new().into();
+        // SAFETY: `source` is the context's event source; `sink` is a valid COM
+        // object that implements ITfTextEditSink.
+        if let Ok(cookie) = unsafe { source.AdviseSink(&ITfTextEditSink::IID, &sink) } {
+            *self.edit_advise.borrow_mut() = Some((source, cookie));
+        }
+    }
+}
+
 impl Drop for ThreadMgrSink {
     fn drop(&mut self) {
+        self.unadvise_edit();
         release();
     }
 }
@@ -112,12 +248,13 @@ impl ITfThreadMgrEventSink_Impl for ThreadMgrSink_Impl {
     }
     fn OnSetFocus(
         &self,
-        _focus: Option<&ITfDocumentMgr>,
+        focus: Option<&ITfDocumentMgr>,
         _previous: Option<&ITfDocumentMgr>,
     ) -> Result<()> {
-        // Hook point: the next increment advises a per-context edit sink on the
-        // newly focused document here (to detect typed words). For now, no-op —
-        // observing focus must never disturb the host.
+        match focus {
+            Some(focus) => self.advise_edit(focus),
+            None => self.unadvise_edit(),
+        }
         Ok(())
     }
     fn OnPushContext(&self, _context: Option<&ITfContext>) -> Result<()> {
@@ -589,5 +726,50 @@ extern "system" fn DllUnregisterServer() -> HRESULT {
     match tsf.and(registry) {
         Ok(()) => S_OK,
         Err(error) => error.code(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_word_before_a_boundary() {
+        assert_eq!(
+            detect_token("wierd "),
+            Some(("wierd".to_owned(), Boundary::Space))
+        );
+        assert_eq!(
+            detect_token("wierd."),
+            Some(("wierd".to_owned(), Boundary::Period))
+        );
+        // Only the trailing token, not the whole line.
+        assert_eq!(
+            detect_token("the other wierd,"),
+            Some(("wierd".to_owned(), Boundary::Comma))
+        );
+    }
+
+    #[test]
+    fn no_boundary_means_no_detection() {
+        // Still mid-word (no trailing boundary) — wait for the boundary.
+        assert_eq!(detect_token("wierd"), None);
+        assert_eq!(detect_token(""), None);
+    }
+
+    #[test]
+    fn boundary_with_no_preceding_token_is_ignored() {
+        assert_eq!(detect_token(" "), None);
+        assert_eq!(detect_token("hello  "), None); // double space: empty token
+        assert_eq!(detect_token("."), None);
+    }
+
+    #[test]
+    fn boundary_chars_map_correctly() {
+        assert_eq!(boundary_from_char(' '), Some(Boundary::Space));
+        assert_eq!(boundary_from_char('?'), Some(Boundary::Question));
+        assert_eq!(boundary_from_char(';'), Some(Boundary::Semicolon));
+        assert_eq!(boundary_from_char('a'), None);
+        assert_eq!(boundary_from_char('-'), None);
     }
 }

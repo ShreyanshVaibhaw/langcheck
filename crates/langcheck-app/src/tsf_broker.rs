@@ -5,9 +5,9 @@
 //! logic and persistence (`blueprint.md` §7.1, 11.4); the adapter only asks and
 //! applies. The server enforces the kill switch: when LangCheck is disabled or
 //! paused, every `Evaluate` is answered `Leave` (a liveness `Ping` is still
-//! answered). The same-user, local-only pipe is provided by
-//! `langcheck-windows::ipc`.
+//! answered). The same-user, local-only pipe is provided by `langcheck-ipc`.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use langcheck_core::ipc::{Request, Response};
@@ -23,13 +23,18 @@ use crate::engine;
 /// Fail-open: if the pipe cannot be created the adapter simply finds no broker and
 /// (by its own contract) leaves typing untouched. Per-request engine work reuses
 /// the immutable `lexicon` and `personal` dictionary.
+///
+/// When `log_requests` is set, each Evaluate prints a running **count** (never the
+/// typed token — privacy) so the TSF adapter's detection can be confirmed live.
 pub fn serve(
     shared: Arc<SharedState>,
     lexicon: Box<dyn LexiconProvider>,
     personal: PersonalDictionary,
+    log_requests: bool,
 ) {
     let weights = RankWeights::default();
     let policy = ConfidencePolicy::default();
+    let evaluations = AtomicU32::new(0);
 
     let server = match PipeServer::bind() {
         Ok(server) => server,
@@ -39,13 +44,22 @@ pub fn serve(
     while !shared.is_shutdown() {
         // Re-read the kill switch per connection.
         let active = shared.enabled() && !shared.paused();
-        let outcome = server.serve_one(|request| match request {
-            Request::Ping => Response::Pong,
-            request @ Request::Evaluate { .. } if active => {
-                engine::evaluate_request(request, &*lexicon, &personal, &weights, &policy)
+        let outcome = server.serve_one(|request| {
+            if log_requests {
+                if let Request::Evaluate { .. } = request {
+                    let n = evaluations.fetch_add(1, Ordering::SeqCst) + 1;
+                    // Privacy: count only — never the typed token (blueprint §12.1).
+                    println!("broker: evaluate request #{n} received");
+                }
             }
-            // Kill switch engaged: acknowledge but never correct.
-            Request::Evaluate { .. } => Response::Leave,
+            match request {
+                Request::Ping => Response::Pong,
+                request @ Request::Evaluate { .. } if active => {
+                    engine::evaluate_request(request, &*lexicon, &personal, &weights, &policy)
+                }
+                // Kill switch engaged: acknowledge but never correct.
+                Request::Evaluate { .. } => Response::Leave,
+            }
         });
         // A transient client/IO error must not kill the broker; the instance was
         // already reset, so just wait for the next client.

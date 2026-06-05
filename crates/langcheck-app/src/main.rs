@@ -174,7 +174,8 @@ fn spawn_tsf_broker(shared: &Arc<SharedState>) {
         .map(|dir| PersonalDictionary::load_dir(&dir))
         .unwrap_or_default();
     let shared = Arc::clone(shared);
-    std::thread::spawn(move || tsf_broker::serve(shared, Box::new(lexicon), personal));
+    // Quiet in the background broker (no per-request logging in normal operation).
+    std::thread::spawn(move || tsf_broker::serve(shared, Box::new(lexicon), personal, false));
 }
 
 /// `--status`: print the persisted settings and start-at-login registration.
@@ -289,7 +290,9 @@ fn run_broker_serve() {
         .unwrap_or_default();
     let shared = Arc::new(SharedState::new());
     println!("LangCheck IPC broker serving on the per-user pipe. Press Ctrl-C to stop.");
-    tsf_broker::serve(shared, Box::new(lexicon), personal);
+    println!("(Each evaluate request from the adapter is counted below — no typed text is shown.)");
+    // Verbose: log a per-request count so adapter detection can be confirmed live.
+    tsf_broker::serve(shared, Box::new(lexicon), personal, true);
 }
 
 /// `--broker-eval WORD`: act as an IPC client and print the broker's decision for

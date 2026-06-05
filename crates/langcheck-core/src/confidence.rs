@@ -112,10 +112,19 @@ pub fn evaluate(
     if !snapshot.is_autocorrect_eligible() {
         return CorrectionDecision::Ignore(IgnoreReason::NotEligible(snapshot.class));
     }
-    if is_original_known {
+    let candidates = assemble(&snapshot.normalized, lexicon_candidates);
+    // A curated common-typo rule or an explicit user pair overrides "known"-ness: a
+    // known but commonly-mistyped form (e.g. an archaic dictionary entry like
+    // "wierd") is still corrected. Without such a rule, a known word is left alone.
+    let has_overriding_rule = candidates.iter().any(|candidate| {
+        matches!(
+            candidate.source,
+            CandidateSource::CommonTypoRule | CandidateSource::UserPair
+        )
+    });
+    if is_original_known && !has_overriding_rule {
         return CorrectionDecision::Known;
     }
-    let candidates = assemble(&snapshot.normalized, lexicon_candidates);
     let scored = rank(snapshot, &candidates, weights);
     decide(snapshot, &scored, policy)
 }
@@ -207,6 +216,18 @@ mod tests {
             eval(&snapshot("hello"), true, &[]),
             CorrectionDecision::Known
         );
+    }
+
+    #[test]
+    fn curated_rule_overrides_a_known_word() {
+        // "wierd" is a built-in common typo that also exists in comprehensive
+        // dictionaries; the rule must still correct it even when is_original_known.
+        match eval(&snapshot("wierd"), true, &[]) {
+            CorrectionDecision::AutoCorrect { candidate } => {
+                assert_eq!(candidate.replacement, "weird");
+            }
+            other => panic!("expected AutoCorrect weird, got {other:?}"),
+        }
     }
 
     #[test]

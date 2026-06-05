@@ -85,6 +85,14 @@ fn release() {
     REF_COUNT.fetch_sub(1, Ordering::SeqCst);
 }
 
+/// Contain any panic inside a host-process callback so it can never unwind across
+/// the COM/FFI boundary into the host app (which is undefined behavior). Fail-open:
+/// a panic simply has no effect, consistent with the adapter's contract. The runtime
+/// paths are audited panic-free; this is defence-in-depth on the hottest callbacks.
+fn contain_panic<F: FnOnce()>(body: F) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+}
+
 /// Set when `AdviseSink` succeeds during activation. Diagnostic only (lets the COM
 /// self-test confirm the focus sink registered without needing a host app).
 static ADVISE_OK: AtomicU32 = AtomicU32::new(0);
@@ -147,7 +155,7 @@ fn read_trailing_token(context: &ITfContext, ec: u32) -> Option<(String, Boundar
     let mut copied = 0u32;
     // SAFETY: read the (now back-extended) range's text into `buffer`.
     unsafe { range.GetText(ec, 0, &mut buffer, &mut copied) }.ok()?;
-    let text = String::from_utf16_lossy(&buffer[..copied as usize]);
+    let text = String::from_utf16_lossy(&buffer[..(copied as usize).min(buffer.len())]);
     detect_token(&text)
 }
 
@@ -176,7 +184,7 @@ fn verified_word_range(context: &ITfContext, ec: u32, token: &str) -> Option<ITf
     let mut copied = 0u32;
     // SAFETY: read the candidate word range's text to verify it.
     unsafe { range.GetText(ec, 0, &mut buffer, &mut copied) }.ok()?;
-    let got = String::from_utf16_lossy(&buffer[..copied as usize]);
+    let got = String::from_utf16_lossy(&buffer[..(copied as usize).min(buffer.len())]);
     (got == token).then_some(range)
 }
 
@@ -205,9 +213,13 @@ impl Drop for ReplaceSession {
 
 impl ITfEditSession_Impl for ReplaceSession_Impl {
     fn DoEditSession(&self, ec: u32) -> Result<()> {
-        // SAFETY: write within the granted write cookie; replace the verified word
-        // range. TF_ST_CORRECTION marks this as an autocorrection to the host.
-        unsafe { self.range.SetText(ec, TF_ST_CORRECTION, &self.replacement) }
+        // Runs inside the host process; contain any panic at the FFI boundary.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: write within the granted write cookie; replace the verified
+            // word range. TF_ST_CORRECTION marks this as an autocorrection.
+            unsafe { self.range.SetText(ec, TF_ST_CORRECTION, &self.replacement) }
+        }))
+        .unwrap_or(Ok(()))
     }
 }
 
@@ -262,9 +274,14 @@ impl ITfTextEditSink_Impl for EditSink_Impl {
         ec: u32,
         _record: Option<&ITfEditRecord>,
     ) -> Result<()> {
-        if let Some(context) = context {
-            maybe_correct(context, ec, self.client_id);
-        }
+        let client_id = self.client_id;
+        // Runs on every edit inside the host process — contain any panic so it never
+        // unwinds into the host. Always report success (fail-open).
+        contain_panic(|| {
+            if let Some(context) = context {
+                maybe_correct(context, ec, client_id);
+            }
+        });
         Ok(())
     }
 }

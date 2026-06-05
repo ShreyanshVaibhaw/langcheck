@@ -67,8 +67,11 @@ path so they cannot diverge. A **kill switch** (`tsf_adapter_enabled` config,
   `langcheck-ipc`, never the broker's Win32 integration).
 - **−** Registration needs one-time administrator elevation (machine-wide TIP).
 - **−** In-process COM carries host-stability risk. Mitigated by fail-open, the
-  range re-verification, and an off-host COM harness (`--tsf-comtest`) that proves
-  activate→advise→focus→deactivate runs without faulting.
+  range re-verification, an off-host COM harness (`--tsf-comtest`) that proves
+  activate→advise→focus→deactivate runs without faulting, an audited panic-free
+  runtime path (no unwrap/expect/panic; bounds clamped on host-provided lengths),
+  and **panic containment** (`catch_unwind`) on the hottest callbacks (`OnEndEdit`,
+  `DoEditSession`) so a panic can never unwind across the FFI boundary into the host.
 - **−** The live edit path can only be fully verified inside a real editor; CI and
   the harness cover everything else (protocol, transport, decision logic, COM
   plumbing).

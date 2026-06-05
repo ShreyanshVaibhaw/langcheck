@@ -56,6 +56,9 @@ pub fn serve(
             match request {
                 Request::Ping => Response::Pong,
                 request @ Request::Evaluate { .. } if active => {
+                    // Mark the TSF adapter as handling the foreground window so the
+                    // MVP SendInput path defers and they never double-correct.
+                    shared.note_tsf_activity(shared.focus_id.load(Ordering::SeqCst));
                     engine::evaluate_request(request, &*lexicon, &personal, &weights, &policy)
                 }
                 // Kill switch engaged: acknowledge but never correct.

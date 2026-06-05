@@ -83,8 +83,12 @@ path so they cannot diverge. A **kill switch** (`tsf_adapter_enabled` config,
 - [ ] App-matrix: a Chromium browser field, Microsoft Edge, a notes/markdown
       editor, a chat app, Microsoft Word — correction applies (or fails open) and
       typing is never disrupted.
-- [ ] No double-correction when `--background` (the MVP `SendInput` path) and the
-      TSF adapter are both active in the same app.
+- [~] No double-correction when `--background` (the MVP `SendInput` path) and the
+      TSF adapter are both active. *Mitigated in code:* the broker records which
+      window the adapter is handling (from its Evaluate requests) and the MVP path
+      defers there for a short interval (`SharedState::tsf_handling`); steady typing
+      can't double-correct. The first word in a newly-focused TSF field could still
+      race — confirm on a real desktop.
 - [ ] Host-process memory overhead of `langcheck_tsf.dll` measured and approved.
 - [ ] 8-hour stability with the TIP active in a host app: no crash, no stuck input.
 

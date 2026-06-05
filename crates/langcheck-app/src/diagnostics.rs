@@ -37,6 +37,8 @@ pub struct Metrics {
     pub cancel_unsafe: AtomicU64,
     /// Cancelled because the pair is blocked or session-suppressed (undo).
     pub cancel_blocked: AtomicU64,
+    /// Cancelled because the TSF adapter is handling this window (no double-correct).
+    pub cancel_tsf: AtomicU64,
     /// Corrections reversed by immediate undo.
     pub corrections_undone: AtomicU64,
 }
@@ -62,6 +64,7 @@ impl Metrics {
             cancel_focus: self.cancel_focus.load(Ordering::Relaxed),
             cancel_unsafe: self.cancel_unsafe.load(Ordering::Relaxed),
             cancel_blocked: self.cancel_blocked.load(Ordering::Relaxed),
+            cancel_tsf: self.cancel_tsf.load(Ordering::Relaxed),
             corrections_undone: self.corrections_undone.load(Ordering::Relaxed),
         }
     }
@@ -83,6 +86,7 @@ pub struct MetricsSnapshot {
     pub cancel_focus: u64,
     pub cancel_unsafe: u64,
     pub cancel_blocked: u64,
+    pub cancel_tsf: u64,
     pub corrections_undone: u64,
 }
 

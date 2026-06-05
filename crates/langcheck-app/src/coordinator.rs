@@ -18,7 +18,29 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// How long after a TSF Evaluate the MVP path keeps deferring to the adapter for the
+/// same window (covers typing cadence; expires so other apps resume normally).
+const TSF_DEFER_WINDOW_MS: u64 = 2000;
+
+/// Wall-clock milliseconds since the Unix epoch (used only for the coarse TSF-defer
+/// window; a small clock skew is harmless).
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Pure: should the MVP path defer because the TSF adapter is actively handling this
+/// window? True only when the most recent TSF activity was for *this* (non-zero)
+/// focus and within [`TSF_DEFER_WINDOW_MS`].
+fn tsf_defer(active_focus: u64, active_at_ms: u64, focus_id: u64, now: u64) -> bool {
+    focus_id != 0
+        && active_focus == focus_id
+        && now.saturating_sub(active_at_ms) < TSF_DEFER_WINDOW_MS
+}
 
 use langcheck_core::classify::normalize_lookup;
 use langcheck_core::{
@@ -48,6 +70,12 @@ pub struct SharedState {
     /// TSF-adapter-specific kill switch: when false, the TSF broker answers every
     /// Evaluate with "leave" (the MVP path is unaffected).
     pub tsf_enabled: AtomicBool,
+    /// Focus id for which the TSF adapter most recently asked the broker to evaluate
+    /// a word (0 = none). With `tsf_active_at_ms`, lets the MVP path defer where the
+    /// adapter is handling text, so they never both correct the same word.
+    pub tsf_active_focus: AtomicU64,
+    /// Wall-clock ms of that most recent TSF activity.
+    pub tsf_active_at_ms: AtomicU64,
     /// Shutdown signal for the coordinator and focus threads.
     pub shutdown: AtomicBool,
 }
@@ -59,6 +87,8 @@ impl SharedState {
             enabled: AtomicBool::new(true),
             paused: AtomicBool::new(false),
             tsf_enabled: AtomicBool::new(true),
+            tsf_active_focus: AtomicU64::new(0),
+            tsf_active_at_ms: AtomicU64::new(0),
             shutdown: AtomicBool::new(false),
         }
     }
@@ -73,6 +103,24 @@ impl SharedState {
 
     pub fn tsf_enabled(&self) -> bool {
         self.tsf_enabled.load(Ordering::SeqCst)
+    }
+
+    /// Record that the TSF adapter just asked about a word in `focus_id` (called by
+    /// the TSF broker on each active Evaluate).
+    pub fn note_tsf_activity(&self, focus_id: u64) {
+        self.tsf_active_focus.store(focus_id, Ordering::SeqCst);
+        self.tsf_active_at_ms.store(now_ms(), Ordering::SeqCst);
+    }
+
+    /// Whether the MVP path should defer to the TSF adapter for `focus_id` (the
+    /// adapter handled this same window within the defer window).
+    pub fn tsf_handling(&self, focus_id: u64) -> bool {
+        tsf_defer(
+            self.tsf_active_focus.load(Ordering::SeqCst),
+            self.tsf_active_at_ms.load(Ordering::SeqCst),
+            focus_id,
+            now_ms(),
+        )
     }
 
     pub fn is_shutdown(&self) -> bool {
@@ -295,6 +343,15 @@ impl Coordinator {
         boundary: langcheck_core::Boundary,
         boundary_gen: u64,
     ) {
+        // Defer to the TSF adapter when it is actively correcting this same window,
+        // so the MVP SendInput path never double-corrects what TSF already handles
+        // (the adapter is the precision path where it is active; ADR-0008).
+        if self.shared.tsf_handling(word.focus_id) {
+            Metrics::inc(&self.metrics.commits_cancelled);
+            Metrics::inc(&self.metrics.cancel_tsf);
+            return;
+        }
+
         let ctx = CommitContext {
             enabled: self.shared.enabled(),
             paused: self.shared.paused(),
@@ -443,5 +500,20 @@ mod tests {
             }),
             CommitGate::Cancel(CancelReason::StaleGeneration)
         );
+    }
+
+    #[test]
+    fn tsf_defer_only_for_same_recent_nonzero_focus() {
+        let now = 100_000;
+        // Same window, just now → defer.
+        assert!(tsf_defer(42, now, 42, now));
+        // Same window, within the window → defer.
+        assert!(tsf_defer(42, now - (TSF_DEFER_WINDOW_MS - 1), 42, now));
+        // Same window, past the window → do not defer.
+        assert!(!tsf_defer(42, now - TSF_DEFER_WINDOW_MS, 42, now));
+        // Different window → do not defer (MVP still corrects there).
+        assert!(!tsf_defer(7, now, 42, now));
+        // Unknown focus (0) is never deferred.
+        assert!(!tsf_defer(0, now, 0, now));
     }
 }

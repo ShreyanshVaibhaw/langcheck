@@ -148,8 +148,10 @@ pub struct Coordinator {
     undo: UndoState,
     undo_recorded_at: Option<Instant>,
     undo_window: Duration,
-    /// Pairs rejected via undo this session; never re-applied until restart.
+    /// Pairs rejected twice via undo this session; never re-applied until restart.
     session_blocklist: HashSet<(String, String)>,
+    /// Pairs undone once (a single rejection only restores; a repeat suppresses).
+    undo_history: HashSet<(String, String)>,
 }
 
 impl Coordinator {
@@ -174,6 +176,7 @@ impl Coordinator {
             undo_recorded_at: None,
             undo_window,
             session_blocklist: HashSet::new(),
+            undo_history: HashSet::new(),
         }
     }
 
@@ -252,7 +255,11 @@ impl Coordinator {
         self.undo_recorded_at = None;
     }
 
-    /// Reverse a just-applied correction and suppress the pair for the session.
+    /// Reverse a just-applied correction. The first rejection of a pair only
+    /// restores the original (so a single stray Backspace doesn't silently disable a
+    /// correction); a *repeated* rejection of the same pair suppresses it for the
+    /// session (`blueprint.md` Section 8.11 — "repeated undo"). Permanent blocking
+    /// stays a deliberate user action (`blocked_pairs.tsv`).
     fn perform_undo(&mut self, correction: &PendingCorrection) {
         match self.executor.execute_undo(
             &correction.original,
@@ -260,11 +267,16 @@ impl Coordinator {
             correction.boundary,
         ) {
             Ok(()) => {
-                self.session_blocklist.insert((
+                Metrics::inc(&self.metrics.corrections_undone);
+                let pair = (
                     normalize_lookup(&correction.original),
                     normalize_lookup(&correction.replacement),
-                ));
-                Metrics::inc(&self.metrics.corrections_undone);
+                );
+                // `insert` returns false if the pair was already undone once — a
+                // repeat — so escalate it to session suppression.
+                if !self.undo_history.insert(pair.clone()) {
+                    self.session_blocklist.insert(pair);
+                }
             }
             Err(_) => Metrics::inc(&self.metrics.replace_failures),
         }

@@ -23,6 +23,11 @@ ADR-0002) are important for expectations:
    editors) often intercept or re-handle injected input, so the backspace/retype
    does not produce the expected result. Exact-range editing for those apps is the
    purpose of the post-MVP **TSF adapter (Step 13)**.
+3. **Undo is forgiving.** Pressing Backspace immediately after a correction
+   restores your original word. A single such rejection only restores — it does
+   *not* disable the correction — so a stray Backspace won't silently stop
+   corrections. Rejecting the *same* pair a second time in a session suppresses it
+   for that session; permanent blocking is a deliberate entry in `blocked_pairs.tsv`.
 
 **Diagnosing:** `langcheck --run` prints a per-reason cancellation breakdown, e.g.
 `cancelled=12 [stale=12 focus=0 unsafe=0 blocked=0]`. `stale` dominating means

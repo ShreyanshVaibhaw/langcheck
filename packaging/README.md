@@ -41,7 +41,9 @@ without unregistering.
    `en-US.meta.json`; the build is reproducible — see ADR-0007).
 3. **Pass the release gates** (`blueprint.md` Section 20): `cargo fmt --check`,
    `cargo clippy -D warnings`, `cargo test --workspace`, `cargo deny check`, and the
-   offline-invariant + no-typing-history audits (`docs/privacy.md`).
+   offline-invariant audit (`scripts/offline-audit.ps1` — now CI-enforced) +
+   no-typing-history audit (`retain_typing_history` forced false; see `docs/privacy.md`).
+   All run in CI on every push.
 4. **Code sign** `langcheck.exe` **and `langcheck_tsf.dll`** ⛏ *manual — needs your
    certificate*. Both must be signed — the DLL especially, since it loads into other
    processes as a registered TSF text service:

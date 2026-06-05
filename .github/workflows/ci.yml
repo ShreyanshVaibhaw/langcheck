@@ -98,3 +98,15 @@ jobs:
           format: cyclonedx-json
           output-file: langcheck.cdx.json
           artifact-name: langcheck-sbom-cyclonedx.json
+
+  offline-audit:
+    name: Offline invariant (no networking/telemetry)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Source-level guard for the non-negotiable offline invariant (blueprint 1.1,
+      # 16): no raw networking primitives or networking/HTTP Windows features. This
+      # complements the cargo-deny crate bans. pwsh is preinstalled on the runner.
+      - name: Offline-invariant source audit
+        shell: pwsh
+        run: ./scripts/offline-audit.ps1

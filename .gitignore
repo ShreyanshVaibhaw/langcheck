@@ -8,6 +8,10 @@
 /crash-dumps/
 *.dmp
 
+# Release packaging output (packaging/package.ps1) + generated SBOMs
+/dist/
+*.cdx.json
+
 # Local runtime state and diagnostics
 /local-data/
 /logs/

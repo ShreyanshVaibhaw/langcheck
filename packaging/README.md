@@ -11,6 +11,7 @@ distributed as signed packages obtained out-of-band (Section 21.2).
 |---|---|
 | [`install.ps1`](install.ps1) | Per-user install to `%LOCALAPPDATA%\Programs\LangCheck`; copies `langcheck_tsf.dll`; optional start-at-login / launch / `-RegisterTsf`. |
 | [`uninstall.ps1`](uninstall.ps1) | Unregister the TSF adapter (if registered), remove app + startup; keep settings unless `-DeleteState`. |
+| [`package.ps1`](package.ps1) | Assemble a versioned release zip (exe + DLL + LICENSE + scripts + SBOM) under `dist\`. Warns if unsigned. |
 
 Quick local install (after a release build):
 
@@ -51,9 +52,11 @@ without unregistering.
 5. **SBOM + third-party notices** ⛏ *manual — needs tooling*: generate an SBOM
    (e.g. `cargo cyclonedx`) and license notices (e.g. `cargo about generate`).
    (CI uploads a CycloneDX SBOM artifact on each build — see `.github/workflows`.)
-6. **Package**: zip `langcheck.exe`, **`langcheck_tsf.dll`**, `LICENSE`,
-   `install.ps1`, `uninstall.ps1` (+ SBOM/notices). Sign the package if distributing
-   an installer executable.
+6. **Package**: `packaging\package.ps1` stages `langcheck.exe`, `langcheck_tsf.dll`,
+   `LICENSE`, `install.ps1`, `uninstall.ps1`, a packaging note, and any SBOM into
+   `dist\langcheck-<version>-x86_64-pc-windows-msvc.zip`. Run it **after** signing
+   (step 4) — it warns if the binaries are unsigned. Sign the package too if
+   distributing an installer executable.
 7. **Test** ⛏ *manual — needs a clean machine*: clean install, upgrade-over-previous,
    uninstall (with and without `-DeleteState`); confirm no admin prompt except the
    opt-in TSF step, start-at-login round-trips, the TSF adapter registers/unregisters

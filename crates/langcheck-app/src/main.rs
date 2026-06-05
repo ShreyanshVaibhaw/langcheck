@@ -11,7 +11,9 @@
 mod config;
 mod coordinator;
 mod diagnostics;
+mod engine;
 mod persistence;
+mod tsf_broker;
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{sync_channel, RecvTimeoutError};
@@ -131,6 +133,10 @@ fn run_background() {
             None => return,
         };
 
+    // TSF IPC broker: answer the precision adapter when it connects. Detached — it
+    // idles until a same-user client appears and dies with the process on exit.
+    spawn_tsf_broker(&shared);
+
     let handler = Box::new(BrokerTrayHandler {
         shared: Arc::clone(&shared),
         config_path: persistence::config_path(),
@@ -147,6 +153,20 @@ fn run_background() {
     observer.stop();
     let _ = coordinator_thread.join();
     let _ = focus_thread.join();
+}
+
+/// Spawn the TSF IPC broker on a detached thread, with its own lexicon and personal
+/// dictionary (so it shares no mutable state with the coordinator). Best-effort: if
+/// the lexicon can't load, the adapter simply finds no broker (fail open).
+fn spawn_tsf_broker(shared: &Arc<SharedState>) {
+    let Ok(lexicon) = CompactFstLexicon::production_en_us() else {
+        return;
+    };
+    let personal = persistence::state_dir()
+        .map(|dir| PersonalDictionary::load_dir(&dir))
+        .unwrap_or_default();
+    let shared = Arc::clone(shared);
+    std::thread::spawn(move || tsf_broker::serve(shared, Box::new(lexicon), personal));
 }
 
 /// `--status`: print the persisted settings and start-at-login registration.

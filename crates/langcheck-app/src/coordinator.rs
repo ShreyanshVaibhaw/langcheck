@@ -22,11 +22,10 @@ use std::time::{Duration, Instant};
 
 use langcheck_core::classify::normalize_lookup;
 use langcheck_core::{
-    evaluate, CandidateSource, CandidateWord, ConfidencePolicy, CorrectionDecision,
-    PendingCorrection, RankWeights, Session, SessionConfig, SessionEvent, SessionOutcome,
-    UndoDecision, UndoState, WordSnapshot,
+    ConfidencePolicy, CorrectionDecision, PendingCorrection, RankWeights, Session, SessionConfig,
+    SessionEvent, SessionOutcome, UndoDecision, UndoState, WordSnapshot,
 };
-use langcheck_lexicon::{LanguageTag, LexiconProvider, PersonalDictionary, MAX_LEXICON_CANDIDATES};
+use langcheck_lexicon::{LexiconProvider, PersonalDictionary};
 use langcheck_windows::input::translate::{KeyTranslator, Translated};
 use langcheck_windows::input::{self, InputEvent};
 use langcheck_windows::replace::{ReplacementExecutor, ReplacementPlan, SendInputExecutor};
@@ -308,48 +307,12 @@ impl Coordinator {
         }
 
         let deadline = Some(Instant::now() + Duration::from_millis(DECISION_DEADLINE_MS));
-        let normalized = word.normalized.clone();
-
-        // A user-forced pair overrides "known"-ness; otherwise a personal word or a
-        // dictionary word is treated as already correct and left alone.
-        let forced = self
-            .personal
-            .forced_correction(&normalized)
-            .map(str::to_owned);
-        let is_known = forced.is_none()
-            && (self.lexicon.contains(LanguageTag::EnUs, &normalized)
-                || self.personal.contains_word(&normalized));
-
-        let mut candidates: Vec<CandidateWord> = self
-            .lexicon
-            .candidates(
-                LanguageTag::EnUs,
-                &normalized,
-                MAX_LEXICON_CANDIDATES,
-                deadline,
-            )
-            .unwrap_or_default()
-            .into_iter()
-            .map(|c| CandidateWord {
-                word: c.word,
-                edit_distance: c.edit_distance,
-                frequency: c.frequency,
-                source: CandidateSource::Lexicon,
-            })
-            .collect();
-        if let Some(forced) = &forced {
-            candidates.push(CandidateWord {
-                word: forced.clone(),
-                edit_distance: 1,
-                frequency: u32::MAX,
-                source: CandidateSource::UserPair,
-            });
-        }
-
-        let decision = evaluate(
+        // The candidate assembly + confidence policy is shared with the TSF IPC
+        // handler so the two paths never diverge (see `crate::engine::decide`).
+        let decision = crate::engine::decide(
             word,
-            is_known,
-            &candidates,
+            &*self.lexicon,
+            &self.personal,
             &self.weights,
             &self.policy,
             deadline,
@@ -366,7 +329,10 @@ impl Coordinator {
         };
 
         // Honour blocked pairs and session suppression (pairs rejected via undo).
-        let pair = (normalized, normalize_lookup(&candidate.replacement));
+        let pair = (
+            word.normalized.clone(),
+            normalize_lookup(&candidate.replacement),
+        );
         if self.personal.is_blocked(&pair.0, &pair.1) || self.session_blocklist.contains(&pair) {
             Metrics::inc(&self.metrics.commits_cancelled);
             Metrics::inc(&self.metrics.cancel_blocked);

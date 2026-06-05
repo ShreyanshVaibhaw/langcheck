@@ -18,7 +18,7 @@ use core::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
-use windows::core::{s, w, Error, Result, HRESULT, PCWSTR};
+use windows::core::{s, w, Error, Result, HRESULT, PCSTR, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, FreeLibrary, HANDLE, HMODULE, HWND};
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
@@ -33,13 +33,19 @@ type SelfRegFn = unsafe extern "system" fn() -> HRESULT;
 /// `DllRegisterServer`. Requires elevation. `dll_path` is the full path to
 /// `langcheck_tsf.dll`.
 pub fn register(dll_path: &Path) -> Result<()> {
-    call_self_reg(dll_path, true)
+    call_export(dll_path, s!("DllRegisterServer"))
 }
 
 /// Unregister the TSF adapter (machine-wide) via `DllUnregisterServer`. Requires
 /// elevation.
 pub fn unregister(dll_path: &Path) -> Result<()> {
-    call_self_reg(dll_path, false)
+    call_export(dll_path, s!("DllUnregisterServer"))
+}
+
+/// Run the adapter's IPC self-test (`LangCheckIpcSelfTest`): confirm the in-DLL
+/// client can reach the broker. No elevation required (it only opens the pipe).
+pub fn ipc_selftest(dll_path: &Path) -> Result<()> {
+    call_export(dll_path, s!("LangCheckIpcSelfTest"))
 }
 
 /// Build a `langcheck-windows`-style error with a human-readable message.
@@ -108,9 +114,9 @@ pub fn relaunch_elevated(arg: &str) -> Result<()> {
     }
 }
 
-/// Load `dll_path`, call its self-(un)registration export, then free it. The
-/// registration writes persist independently of the loaded module.
-fn call_self_reg(dll_path: &Path, register: bool) -> Result<()> {
+/// Load `dll_path`, call a zero-argument `-> HRESULT` export by name, then free the
+/// module. Any registration writes persist independently of the loaded module.
+fn call_export(dll_path: &Path, name: PCSTR) -> Result<()> {
     let wide: Vec<u16> = dll_path
         .as_os_str()
         .encode_wide()
@@ -118,7 +124,7 @@ fn call_self_reg(dll_path: &Path, register: bool) -> Result<()> {
         .collect();
     // SAFETY: `wide` is a valid NUL-terminated wide path that outlives the call.
     let module = unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())) }?;
-    let outcome = call_loaded(module, register);
+    let outcome = call_loaded(module, name);
     // SAFETY: `module` was just loaded; release our reference.
     unsafe {
         let _ = FreeLibrary(module);
@@ -126,21 +132,16 @@ fn call_self_reg(dll_path: &Path, register: bool) -> Result<()> {
     outcome
 }
 
-/// Resolve and call the self-(un)registration export on an already-loaded module.
-fn call_loaded(module: HMODULE, register: bool) -> Result<()> {
-    let name = if register {
-        s!("DllRegisterServer")
-    } else {
-        s!("DllUnregisterServer")
-    };
+/// Resolve and call a zero-argument `-> HRESULT` export on an already-loaded module.
+fn call_loaded(module: HMODULE, name: PCSTR) -> Result<()> {
     // SAFETY: `module` is a valid loaded module; `name` is a static NUL-terminated
     // ASCII export name.
     let proc = unsafe { GetProcAddress(module, name) }
-        .ok_or_else(|| err("TSF adapter is missing its registration entry point"))?;
+        .ok_or_else(|| err("TSF adapter is missing an expected entry point"))?;
     // SAFETY: the export's ABI is `extern "system" fn() -> HRESULT` by contract (it
     // is our own DLL), so transmuting the resolved function pointer is sound.
     let func: SelfRegFn = unsafe { std::mem::transmute(proc) };
-    // SAFETY: calling the zero-argument COM self-(un)registration entry point.
+    // SAFETY: calling the zero-argument entry point.
     let hr = unsafe { func() };
     hr.ok()
 }

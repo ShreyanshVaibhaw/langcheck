@@ -143,6 +143,8 @@ dependencies = [
 name = "langcheck-tsf"
 version = "0.0.0"
 dependencies = [
+ "langcheck-core",
+ "langcheck-ipc",
  "windows",
  "windows-core",
 ]

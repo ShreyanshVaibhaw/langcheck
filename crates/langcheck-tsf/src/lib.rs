@@ -31,9 +31,13 @@
 use core::ffi::c_void;
 use std::sync::atomic::{AtomicI32, Ordering};
 
+use langcheck_core::ipc::{Request, Response};
+use langcheck_core::Boundary;
+
 use windows::core::{implement, Error, IUnknown, Interface, Result, GUID, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{
-    BOOL, CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, HMODULE, MAX_PATH, S_FALSE, S_OK,
+    BOOL, CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_FAIL, HMODULE, MAX_PATH, S_FALSE,
+    S_OK,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, IClassFactory, IClassFactory_Impl,
@@ -156,6 +160,44 @@ extern "system" fn DllCanUnloadNow() -> HRESULT {
         S_OK
     } else {
         S_FALSE
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Broker IPC client.
+//
+// The adapter holds no language logic: it asks the broker (over the same-user,
+// local-only pipe in `langcheck-ipc`) what to do with a typed token. Every call is
+// fail-open — any error leaves the host's text untouched.
+// ---------------------------------------------------------------------------
+
+/// Ask the broker whether `token` (followed by `boundary`) should be corrected.
+/// Returns the replacement on an auto-correct decision, else `None`. Fail-open:
+/// no broker, a timeout, or a malformed reply all yield `None`.
+fn ask_broker(token: &str, boundary: Boundary) -> Option<String> {
+    let request = Request::Evaluate {
+        token: token.to_owned(),
+        boundary,
+    };
+    match langcheck_ipc::request(&request) {
+        Ok(Response::Replace { replacement }) => Some(replacement),
+        _ => None,
+    }
+}
+
+/// Diagnostic export: verify the adapter can reach the broker over same-user IPC.
+/// Returns `S_OK` only if a liveness Ping is answered AND a known curated typo
+/// round-trips to its correction; otherwise `E_FAIL`. Driven by
+/// `langcheck --tsf-selftest`, this confirms the in-DLL client wiring without
+/// activating the text service in a host app.
+#[no_mangle]
+extern "system" fn LangCheckIpcSelfTest() -> HRESULT {
+    let ping_ok = matches!(langcheck_ipc::request(&Request::Ping), Ok(Response::Pong));
+    let eval_ok = ask_broker("wierd", Boundary::Space).as_deref() == Some("weird");
+    if ping_ok && eval_ok {
+        S_OK
+    } else {
+        E_FAIL
     }
 }
 

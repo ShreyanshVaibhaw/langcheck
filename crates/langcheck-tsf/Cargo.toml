@@ -14,6 +14,12 @@ publish = false
 # A TSF text service is an in-process COM server (a DLL loaded by host apps).
 crate-type = ["cdylib", "rlib"]
 
+[dependencies]
+# The wire protocol (pure) + the minimal same-user pipe transport. Deliberately
+# NOT langcheck-windows — the adapter must stay small inside host processes.
+langcheck-core = { path = "../langcheck-core" }
+langcheck-ipc = { path = "../langcheck-ipc" }
+
 # `windows-core` is required directly because the `#[implement]` macro emits
 # `windows_core::` paths.
 [target.'cfg(windows)'.dependencies.windows-core]

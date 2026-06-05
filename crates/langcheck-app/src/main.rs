@@ -53,6 +53,7 @@ fn main() {
         Some("--unregister-tsf") => set_tsf(false),
         Some("--broker-serve") => run_broker_serve(),
         Some("--broker-eval") => run_broker_eval(std::env::args().nth(2)),
+        Some("--tsf-selftest") => run_tsf_selftest(),
         Some("--reset") => reset_state(),
         _ => println!(
             "LangCheck {} (bootstrap build).\n\
@@ -66,6 +67,7 @@ fn main() {
              langcheck --unregister-tsf     remove the TSF adapter\n  \
              langcheck --broker-serve       run only the IPC broker server (TSF adapter channel)\n  \
              langcheck --broker-eval WORD   ask the running broker about WORD (IPC client; diagnostic)\n  \
+             langcheck --tsf-selftest       check the TSF adapter DLL can reach the broker over IPC\n  \
              langcheck --reset              delete all LangCheck state\n  \
              langcheck --spike              input/focus observer harness (ADR-0002)\n  \
              langcheck --replace-demo       SendInput replacement + integrity skip",
@@ -305,6 +307,26 @@ fn run_broker_eval(word: Option<String>) {
         Ok(IpcResponse::Replace { replacement }) => println!("replace -> {replacement}"),
         Err(e) => eprintln!(
             "broker eval failed: {e}\n(is `langcheck --broker-serve` or `--background` running?)"
+        ),
+    }
+}
+
+/// `--tsf-selftest`: load the TSF adapter DLL and run its `LangCheckIpcSelfTest`
+/// export, confirming the in-DLL IPC client can reach the broker. Requires a running
+/// `--broker-serve`/`--background`. No elevation (only opens the pipe).
+fn run_tsf_selftest() {
+    let Some(dll) = tsf_dll_path() else {
+        eprintln!("could not locate langcheck_tsf.dll next to the executable.");
+        return;
+    };
+    if !dll.exists() {
+        eprintln!("TSF adapter not found: {}", dll.display());
+        return;
+    }
+    match langcheck_windows::tsf::ipc_selftest(&dll) {
+        Ok(()) => println!("TSF adapter IPC self-test PASSED (reached the broker; wierd -> weird)."),
+        Err(e) => eprintln!(
+            "TSF adapter IPC self-test FAILED: {e}\n(is `langcheck --broker-serve` or `--background` running?)"
         ),
     }
 }

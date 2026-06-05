@@ -12,8 +12,9 @@ use std::path::Path;
 use windows::core::{Result, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, HANDLE};
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
-    HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SAM_FLAGS,
+    REG_SZ,
 };
 use windows::Win32::System::Threading::CreateMutexW;
 
@@ -47,7 +48,7 @@ pub fn is_start_at_login_enabled() -> bool {
 }
 
 fn registry_set_string(subkey: &str, name: &str, value: &str) -> Result<()> {
-    let key = open_key(subkey, KEY_SET_VALUE)?;
+    let key = create_key(subkey, KEY_SET_VALUE)?;
     // REG_SZ data is the UTF-16 string including its NUL terminator, as bytes.
     let wide: Vec<u16> = value.encode_utf16().chain(std::iter::once(0)).collect();
     // SAFETY: reinterpreting the `u16` buffer as bytes; the length is exactly
@@ -86,18 +87,32 @@ fn registry_value_exists(subkey: &str, name: &str) -> bool {
     status.is_ok()
 }
 
-fn open_key(subkey: &str, access: windows::Win32::System::Registry::REG_SAM_FLAGS) -> Result<HKEY> {
+fn open_key(subkey: &str, access: REG_SAM_FLAGS) -> Result<HKEY> {
     let mut key = HKEY::default();
     let subkey = HSTRING::from(subkey);
     // SAFETY: HKEY_CURRENT_USER is a predefined key; `subkey` is a valid wide
     // string; `key` is written on success.
+    unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(subkey.as_ptr()), 0, access, &mut key).ok()? };
+    Ok(key)
+}
+
+/// Create-or-open a subkey under `HKEY_CURRENT_USER` for writing.
+fn create_key(subkey: &str, access: REG_SAM_FLAGS) -> Result<HKEY> {
+    let mut key = HKEY::default();
+    let subkey = HSTRING::from(subkey);
+    // SAFETY: HKEY_CURRENT_USER is predefined; `subkey` is a valid wide string;
+    // `key` is written on success. No class or security attributes are supplied.
     unsafe {
-        RegOpenKeyExW(
+        RegCreateKeyExW(
             HKEY_CURRENT_USER,
             PCWSTR(subkey.as_ptr()),
             0,
+            PCWSTR::null(),
+            REG_OPTION_NON_VOLATILE,
             access,
+            None,
             &mut key,
+            None,
         )
         .ok()?
     };
@@ -160,17 +175,28 @@ mod tests {
     }
 
     #[test]
-    fn registry_string_round_trips_with_unique_test_value() {
-        // Use the real Run key (it always exists) with a unique, throwaway value
-        // name so the actual "LangCheck" value is never disturbed.
-        let name = format!("LangCheck-test-{}", std::process::id());
-        assert!(!registry_value_exists(RUN_SUBKEY, &name));
-        registry_set_string(RUN_SUBKEY, &name, "hello").expect("set");
-        assert!(registry_value_exists(RUN_SUBKEY, &name));
-        registry_delete_value(RUN_SUBKEY, &name).expect("delete");
-        assert!(!registry_value_exists(RUN_SUBKEY, &name));
+    fn registry_string_round_trips_in_isolated_subkey() {
+        use windows::Win32::System::Registry::RegDeleteKeyW;
+
+        // A dedicated, throwaway subkey so neither the real Run key nor any other
+        // state is touched (robust across environments and CI).
+        let subkey = format!(r"Software\LangCheckTest-{}", std::process::id());
+        let name = "value";
+
+        assert!(!registry_value_exists(&subkey, name));
+        registry_set_string(&subkey, name, "hello").expect("set");
+        assert!(registry_value_exists(&subkey, name));
+        registry_delete_value(&subkey, name).expect("delete");
+        assert!(!registry_value_exists(&subkey, name));
         // Deleting an absent value is not an error.
-        registry_delete_value(RUN_SUBKEY, &name).expect("idempotent delete");
+        registry_delete_value(&subkey, name).expect("idempotent delete");
+
+        // Clean up the (now empty) test subkey.
+        let wide = HSTRING::from(subkey.as_str());
+        // SAFETY: deleting the empty test subkey we created above.
+        unsafe {
+            let _ = RegDeleteKeyW(HKEY_CURRENT_USER, PCWSTR(wide.as_ptr()));
+        }
     }
 
     #[test]

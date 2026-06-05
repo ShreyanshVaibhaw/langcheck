@@ -45,6 +45,9 @@ pub struct SharedState {
     pub enabled: AtomicBool,
     /// Pause (global or per-app); suspends correction without disabling.
     pub paused: AtomicBool,
+    /// TSF-adapter-specific kill switch: when false, the TSF broker answers every
+    /// Evaluate with "leave" (the MVP path is unaffected).
+    pub tsf_enabled: AtomicBool,
     /// Shutdown signal for the coordinator and focus threads.
     pub shutdown: AtomicBool,
 }
@@ -55,6 +58,7 @@ impl SharedState {
             focus_id: AtomicU64::new(0),
             enabled: AtomicBool::new(true),
             paused: AtomicBool::new(false),
+            tsf_enabled: AtomicBool::new(true),
             shutdown: AtomicBool::new(false),
         }
     }
@@ -65,6 +69,10 @@ impl SharedState {
 
     pub fn paused(&self) -> bool {
         self.paused.load(Ordering::SeqCst)
+    }
+
+    pub fn tsf_enabled(&self) -> bool {
+        self.tsf_enabled.load(Ordering::SeqCst)
     }
 
     pub fn is_shutdown(&self) -> bool {

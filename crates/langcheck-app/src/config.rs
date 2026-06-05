@@ -64,6 +64,11 @@ pub struct Config {
     pub launch_in_background: bool,
     pub undo_window_ms: u64,
     pub diagnostics: bool,
+    /// Kill switch for the post-MVP TSF precision adapter: when `false`, the broker
+    /// answers every adapter Evaluate with "leave" so no TSF correction is applied,
+    /// without unregistering the adapter or affecting the MVP path. Independent of
+    /// `enabled` (which gates everything). Effective at broker start.
+    pub tsf_adapter_enabled: bool,
     pub performance: PerformanceConfig,
     pub privacy: PrivacyConfig,
 }
@@ -79,6 +84,7 @@ impl Default for Config {
             launch_in_background: true,
             undo_window_ms: 2000,
             diagnostics: false,
+            tsf_adapter_enabled: true,
             performance: PerformanceConfig::default(),
             privacy: PrivacyConfig::default(),
         }
@@ -130,6 +136,7 @@ mod tests {
         assert!(c.enabled);
         assert_eq!(c.mode, CorrectionMode::Conservative);
         assert!(!c.start_at_login);
+        assert!(c.tsf_adapter_enabled); // on by default once the adapter is registered
         assert!(!c.privacy.retain_typing_history);
         assert!(!c.privacy.context_mode);
     }

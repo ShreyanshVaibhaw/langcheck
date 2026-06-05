@@ -42,8 +42,9 @@ pub fn serve(
     };
 
     while !shared.is_shutdown() {
-        // Re-read the kill switch per connection.
-        let active = shared.enabled() && !shared.paused();
+        // Re-read the kill switches per connection: the global enable/pause AND the
+        // TSF-adapter-specific switch must all be on to apply a correction.
+        let active = shared.enabled() && !shared.paused() && shared.tsf_enabled();
         let outcome = server.serve_one(|request| {
             if log_requests {
                 if let Request::Evaluate { .. } = request {

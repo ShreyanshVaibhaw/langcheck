@@ -51,6 +51,8 @@ fn main() {
         Some("--unregister-startup") => set_startup(false),
         Some("--register-tsf") => set_tsf(true),
         Some("--unregister-tsf") => set_tsf(false),
+        Some("--tsf-enable") => set_tsf_enabled(true),
+        Some("--tsf-disable") => set_tsf_enabled(false),
         Some("--broker-serve") => run_broker_serve(),
         Some("--broker-eval") => run_broker_eval(std::env::args().nth(2)),
         Some("--tsf-selftest") => run_tsf_selftest(),
@@ -66,6 +68,8 @@ fn main() {
              langcheck --unregister-startup remove start-at-login\n  \
              langcheck --register-tsf       install the experimental TSF adapter (opt-in; UAC)\n  \
              langcheck --unregister-tsf     remove the TSF adapter\n  \
+             langcheck --tsf-enable         turn TSF-adapter corrections on (kill switch)\n  \
+             langcheck --tsf-disable        turn TSF-adapter corrections off without unregistering\n  \
              langcheck --broker-serve       run only the IPC broker server (TSF adapter channel)\n  \
              langcheck --broker-eval WORD   ask the running broker about WORD (IPC client; diagnostic)\n  \
              langcheck --tsf-selftest       check the TSF adapter DLL can reach the broker over IPC\n  \
@@ -133,6 +137,9 @@ fn run_background() {
     let shared = Arc::new(SharedState::new());
     let active = config.enabled && config.mode != CorrectionMode::Off;
     shared.enabled.store(active, Ordering::SeqCst);
+    shared
+        .tsf_enabled
+        .store(config.tsf_adapter_enabled, Ordering::SeqCst);
     let metrics = Arc::new(Metrics::default());
 
     let (observer, focus_thread, coordinator_thread) =
@@ -185,6 +192,7 @@ fn show_status() {
     println!("  enabled:        {}", config.enabled);
     println!("  mode:           {:?}", config.mode);
     println!("  language:       {}", config.language);
+    println!("  tsf adapter:    {}", config.tsf_adapter_enabled);
     println!(
         "  start at login: config={} registry={}",
         config.start_at_login,
@@ -288,8 +296,15 @@ fn run_broker_serve() {
     let personal = persistence::state_dir()
         .map(|dir| PersonalDictionary::load_dir(&dir))
         .unwrap_or_default();
+    let config = persistence::load_config();
     let shared = Arc::new(SharedState::new());
+    shared
+        .tsf_enabled
+        .store(config.tsf_adapter_enabled, Ordering::SeqCst);
     println!("LangCheck IPC broker serving on the per-user pipe. Press Ctrl-C to stop.");
+    if !config.tsf_adapter_enabled {
+        println!("NOTE: the TSF adapter kill switch is OFF — every evaluate is answered 'leave'.");
+    }
     println!("(Each evaluate request from the adapter is counted below — no typed text is shown.)");
     // Verbose: log a per-request count so adapter detection can be confirmed live.
     tsf_broker::serve(shared, Box::new(lexicon), personal, true);
@@ -357,6 +372,22 @@ fn run_tsf_comtest() {
             );
         }
         Err(e) => eprintln!("TSF adapter COM self-test FAILED: {e}"),
+    }
+}
+
+/// `--tsf-enable` / `--tsf-disable`: the TSF adapter's kill switch. Persists
+/// `tsf_adapter_enabled` in the config; when off, the broker answers every adapter
+/// Evaluate with "leave" (no TSF correction), without unregistering the adapter or
+/// touching the MVP path. Effective the next time the broker starts.
+fn set_tsf_enabled(enable: bool) {
+    let mut config = persistence::load_config();
+    config.tsf_adapter_enabled = enable;
+    match persistence::save_config(&config) {
+        Ok(()) => println!(
+            "TSF adapter corrections {}. Effective when the broker (re)starts.",
+            if enable { "enabled" } else { "disabled" }
+        ),
+        Err(e) => eprintln!("failed to save config: {e}"),
     }
 }
 

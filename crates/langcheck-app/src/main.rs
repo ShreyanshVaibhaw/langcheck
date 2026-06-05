@@ -239,7 +239,7 @@ fn run_autocorrect() {
         std::thread::sleep(Duration::from_secs(2));
         let s = metrics.snapshot();
         println!(
-            "events={} resets={} known={} ignored={} suggested={} auto={} applied={} cancelled={} replace_fail={}",
+            "events={} resets={} known={} ignored={} suggested={} auto={} applied={} undone={} cancelled={} replace_fail={}",
             s.events_translated,
             s.sessions_reset,
             s.known,
@@ -247,6 +247,7 @@ fn run_autocorrect() {
             s.suggested,
             s.autocorrected,
             s.corrections_applied,
+            s.corrections_undone,
             s.commits_cancelled,
             s.replace_failures,
         );

@@ -13,8 +13,8 @@ use windows::core::{Result, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, HANDLE};
 use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
-    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SAM_FLAGS,
-    REG_SZ,
+    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE,
+    REG_SAM_FLAGS, REG_SZ,
 };
 use windows::Win32::System::Threading::CreateMutexW;
 
@@ -92,7 +92,16 @@ fn open_key(subkey: &str, access: REG_SAM_FLAGS) -> Result<HKEY> {
     let subkey = HSTRING::from(subkey);
     // SAFETY: HKEY_CURRENT_USER is a predefined key; `subkey` is a valid wide
     // string; `key` is written on success.
-    unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(subkey.as_ptr()), 0, access, &mut key).ok()? };
+    unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(subkey.as_ptr()),
+            0,
+            access,
+            &mut key,
+        )
+        .ok()?
+    };
     Ok(key)
 }
 

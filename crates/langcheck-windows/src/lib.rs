@@ -21,6 +21,7 @@
 pub mod focus;
 pub mod input;
 pub mod integrity;
+pub mod ipc;
 pub mod policy;
 pub mod replace;
 pub mod startup;

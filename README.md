@@ -7,14 +7,16 @@ in fields it can positively confirm are safe prose, and applies **only
 high-confidence** spelling corrections after a safe word boundary — with an
 immediate undo. It has **no network capability of any kind**.
 
-> **Status:** MVP feature set built (delivery Steps 00–10, CI-green): keyboard
-> observer, UI-Automation focus safety, the offline 30k-word compact-FST engine,
-> conservative ranking/confidence, `SendInput` replacement, tray + persistence,
-> immediate undo, and the personal dictionary. Steps 11–12 (compatibility/perf
-> hardening, signed installer) need on-hardware verification and release logistics;
-> Step 13 (TSF adapter) is post-MVP. See [`blueprint.md`](blueprint.md) Section 27
-> for live step status and [`docs/compatibility.md`](docs/compatibility.md) for
-> how correction behaves and which apps are supported.
+> **Status:** MVP feature set (delivery Steps 00–10) **and the TSF precision
+> adapter (Step 13)** are built and CI-green: keyboard observer, UI-Automation focus
+> safety, the offline 30k-word compact-FST engine, conservative ranking/confidence,
+> `SendInput` replacement, tray + persistence, immediate undo, personal dictionary —
+> plus an opt-in in-process COM text service that corrects in rich/web editors via
+> TSF edit-session replacement (host-verified in WordPad: `wierd `→`weird `). Steps
+> 11–12 (compatibility/perf hardening, **signed** installer) need on-hardware
+> verification and a code-signing certificate. See [`blueprint.md`](blueprint.md)
+> Section 27 for live step status and [`docs/compatibility.md`](docs/compatibility.md)
+> for how correction behaves and which apps are supported.
 
 ## Running it
 
@@ -26,9 +28,11 @@ cargo build --release
 
 A typo is corrected when you type a word, then **space/period, then pause briefly**
 (see "How correction behaves" in [`docs/compatibility.md`](docs/compatibility.md)).
-Correction is reliable in standard Win32 text fields; rich/web editors are
-suggestion-only pending the TSF adapter. Sensitive fields, terminals, password
-managers, and elevated windows are never touched.
+Correction is reliable in standard Win32 text fields out of the box. For rich/web
+editors, the **opt-in TSF adapter** (`langcheck --register-tsf`, then select the
+"LangCheck" input method) corrects in place via TSF — see "The TSF precision
+adapter" in the compatibility doc. Sensitive fields, terminals, password managers,
+and elevated windows are never touched.
 
 ## Non-negotiable invariants
 
@@ -40,7 +44,9 @@ managers, and elevated windows are never touched.
    non-prose, and unknown fields are never queued, buffered, checked, or modified.
 4. **User-controlled background operation** — tray icon, optional start-at-login;
    closing settings does not exit.
-5. **No security bypass** — never elevates, bypasses UIPI, or runs as a service.
+5. **No security bypass** — never bypasses UIPI or runs as a service, and never
+   elevates in normal operation. The only elevation is the **optional** TSF adapter's
+   one-time, opt-in, clearly-prompted registration (machine-wide, like any IME).
 
 See [`blueprint.md`](blueprint.md) Section 1.1 and [`SECURITY.md`](SECURITY.md).
 
@@ -51,7 +57,9 @@ See [`blueprint.md`](blueprint.md) Section 1.1 and [`SECURITY.md`](SECURITY.md).
 | [`crates/langcheck-core`](crates/langcheck-core) | Platform-independent token/session/ranking engine. No OS deps. |
 | [`crates/langcheck-lexicon`](crates/langcheck-lexicon) | Dictionary lookup behind a trait; bundled offline compact FST. |
 | [`crates/langcheck-windows`](crates/langcheck-windows) | Windows integration: input, focus, replacement, tray, startup. |
-| [`crates/langcheck-app`](crates/langcheck-app) | The `langcheck.exe` broker: coordinator, config, persistence. |
+| [`crates/langcheck-app`](crates/langcheck-app) | The `langcheck.exe` broker: coordinator, config, persistence, TSF broker. |
+| [`crates/langcheck-ipc`](crates/langcheck-ipc) | Same-user, local-only named-pipe transport for the broker ↔ TSF-adapter channel. |
+| [`crates/langcheck-tsf`](crates/langcheck-tsf) | Opt-in TSF precision adapter (in-process COM text service) for rich/web editors. |
 | [`crates/langcheck-bench`](crates/langcheck-bench) | Benchmarks for the hot path and lexicon. |
 | [`tools/dictionary-compiler`](tools/dictionary-compiler) | Build-time tool that compiles the FST lexicon. |
 | [`docs/adr`](docs/adr) | Architecture Decision Records. |
@@ -76,8 +84,12 @@ The same quality gates run in CI on every push and pull request:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo deny check          # dependency licenses & advisories
+cargo deny check                  # dependency licenses & advisories
+pwsh scripts\offline-audit.ps1    # offline invariant: no networking in source
 ```
+
+CI additionally builds `langcheck-core` + `langcheck-lexicon` on Linux (platform
+independence) and uploads a CycloneDX SBOM.
 
 ## License
 

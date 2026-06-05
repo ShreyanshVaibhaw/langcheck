@@ -21,14 +21,25 @@
 .PARAMETER Launch
     Start LangCheck in the background after installing.
 
+.PARAMETER RegisterTsf
+    Register the optional TSF precision adapter (corrections in rich/web editors).
+    Opt-in and MACHINE-WIDE: it triggers a UAC prompt, unlike the rest of this
+    per-user install (TSF text services register under HKLM, like any IME — see
+    ADR-0008). The adapter DLL is always copied alongside the exe; this switch also
+    registers it. Omit it for a fully per-user, no-elevation install.
+
 .EXAMPLE
     .\install.ps1 -StartAtLogin -Launch
+
+.EXAMPLE
+    .\install.ps1 -StartAtLogin -Launch -RegisterTsf   # also enable rich-editor corrections (UAC)
 #>
 [CmdletBinding()]
 param(
     [string]$SourceExe,
     [switch]$StartAtLogin,
-    [switch]$Launch
+    [switch]$Launch,
+    [switch]$RegisterTsf
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,6 +63,16 @@ Write-Host "Installing $AppName to $InstallDir ..."
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item -Path $SourceExe -Destination (Join-Path $InstallDir 'langcheck.exe') -Force
 
+# Ship the TSF adapter DLL alongside the exe so it can be registered now or later
+# (langcheck --register-tsf resolves it next to langcheck.exe). It is inert until
+# registered AND the LangCheck input method is selected.
+$sourceDll = Join-Path (Split-Path -Parent $SourceExe) 'langcheck_tsf.dll'
+if (Test-Path $sourceDll) {
+    Copy-Item -Path $sourceDll -Destination (Join-Path $InstallDir 'langcheck_tsf.dll') -Force
+} elseif ($RegisterTsf) {
+    Write-Warning "langcheck_tsf.dll not found next to the exe; the TSF adapter cannot be registered."
+}
+
 $license = Join-Path $ScriptDir '..\LICENSE'
 if (Test-Path $license) {
     Copy-Item -Path $license -Destination (Join-Path $InstallDir 'LICENSE') -Force
@@ -64,6 +85,11 @@ if ($StartAtLogin) {
     & $exe --register-startup
 }
 
+if ($RegisterTsf -and (Test-Path (Join-Path $InstallDir 'langcheck_tsf.dll'))) {
+    Write-Host "Registering the TSF precision adapter (machine-wide; accept the UAC prompt) ..."
+    & $exe --register-tsf
+}
+
 if ($Launch) {
     Write-Host "Launching $AppName in the background ..."
     Start-Process -FilePath $exe -ArgumentList '--background'
@@ -73,4 +99,5 @@ Write-Host ""
 Write-Host "$AppName installed: $exe"
 Write-Host "  Run in background : `"$exe`" --background"
 Write-Host "  Start at login    : `"$exe`" --register-startup   (undo: --unregister-startup)"
-Write-Host "  Uninstall         : packaging\uninstall.ps1"
+Write-Host "  TSF adapter       : `"$exe`" --register-tsf   (rich/web editors; UAC; undo: --unregister-tsf)"
+Write-Host "  Uninstall         : packaging\uninstall.ps1   (also unregisters the TSF adapter)"

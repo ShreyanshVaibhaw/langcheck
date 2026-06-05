@@ -3,8 +3,11 @@
     Per-user uninstaller for LangCheck.
 
 .DESCRIPTION
-    Removes start-at-login, deletes the installed executable, and (only if asked)
-    deletes user state. Per-user only; no elevation. Uninstall always removes the
+    Removes start-at-login, unregisters the TSF adapter if it was registered,
+    deletes the installed executable, and (only if asked) deletes user state.
+    Per-user, with one exception: if the optional TSF adapter was registered, its
+    removal is machine-wide and prompts for elevation (UAC) — it must be undone or a
+    broken input method would point at the deleted DLL. Uninstall always removes the
     startup registration (blueprint.md Sections 21.1, 13.4).
 
 .PARAMETER DeleteState
@@ -32,6 +35,20 @@ if (Test-Path $exe) {
     if ($DeleteState) {
         Write-Host "Deleting user state ..."
         try { & $exe --reset } catch { Write-Warning "could not delete state via app: $_" }
+    }
+}
+
+# Unregister the TSF adapter if it was registered (machine-wide CLSID under HKLM).
+# Must happen BEFORE the DLL is deleted, and we wait for the elevated step to finish
+# so DllUnregisterServer can still load the DLL. Only prompt for UAC if it is
+# actually registered (reading HKLM needs no elevation).
+$tsfClsidKey = 'HKLM:\Software\Classes\CLSID\{4C434B54-5346-4D56-5001-000000000001}'
+if ((Test-Path $exe) -and (Test-Path $tsfClsidKey)) {
+    Write-Host "Unregistering the TSF adapter (machine-wide; accept the UAC prompt) ..."
+    try {
+        Start-Process -FilePath $exe -ArgumentList '--unregister-tsf' -Verb RunAs -Wait
+    } catch {
+        Write-Warning "could not unregister the TSF adapter; run '$exe --unregister-tsf' manually before deleting files: $_"
     }
 }
 

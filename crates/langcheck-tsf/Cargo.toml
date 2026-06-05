@@ -1,0 +1,32 @@
+[package]
+name = "langcheck-tsf"
+description = "Post-MVP TSF (Text Services Framework) precision adapter: a minimal, fail-open in-process COM text service that applies exact-range corrections in compatible apps and defers all language logic to the broker over same-user IPC."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Application workspace crate; not published to crates.io.
+publish = false
+
+[lib]
+# A TSF text service is an in-process COM server (a DLL loaded by host apps).
+crate-type = ["cdylib", "rlib"]
+
+# `windows-core` is required directly because the `#[implement]` macro emits
+# `windows_core::` paths.
+[target.'cfg(windows)'.dependencies.windows-core]
+version = "0.58"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.58"
+features = [
+    "implement",
+    "Win32_Foundation",
+    "Win32_UI_TextServices",
+    "Win32_System_Com",
+    "Win32_System_Registry",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+]

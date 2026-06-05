@@ -6,11 +6,9 @@ members = [
     "crates/langcheck-windows",
     "crates/langcheck-app",
     "crates/langcheck-bench",
+    "crates/langcheck-tsf",
     "tools/dictionary-compiler",
 ]
-
-# Post-MVP crates are added in their delivery step:
-#   crates/langcheck-tsf  ->  Step 13 (TSF precision adapter)
 
 [workspace.package]
 version = "0.0.0"

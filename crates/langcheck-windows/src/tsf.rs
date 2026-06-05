@@ -48,6 +48,12 @@ pub fn ipc_selftest(dll_path: &Path) -> Result<()> {
     call_export(dll_path, s!("LangCheckIpcSelfTest"))
 }
 
+/// Run the adapter's COM self-test (`LangCheckComSelfTest`): drive activation and
+/// the focus sink through a real TSF thread manager, with no host app. No elevation.
+pub fn com_selftest(dll_path: &Path) -> Result<()> {
+    call_export(dll_path, s!("LangCheckComSelfTest"))
+}
+
 /// Build a `langcheck-windows`-style error with a human-readable message.
 fn err(message: &str) -> Error {
     Error::new(HRESULT(-1), message)

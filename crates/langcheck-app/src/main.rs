@@ -54,6 +54,7 @@ fn main() {
         Some("--broker-serve") => run_broker_serve(),
         Some("--broker-eval") => run_broker_eval(std::env::args().nth(2)),
         Some("--tsf-selftest") => run_tsf_selftest(),
+        Some("--tsf-comtest") => run_tsf_comtest(),
         Some("--reset") => reset_state(),
         _ => println!(
             "LangCheck {} (bootstrap build).\n\
@@ -68,6 +69,7 @@ fn main() {
              langcheck --broker-serve       run only the IPC broker server (TSF adapter channel)\n  \
              langcheck --broker-eval WORD   ask the running broker about WORD (IPC client; diagnostic)\n  \
              langcheck --tsf-selftest       check the TSF adapter DLL can reach the broker over IPC\n  \
+             langcheck --tsf-comtest        check the TSF adapter's COM activation + focus sink (no host app)\n  \
              langcheck --reset              delete all LangCheck state\n  \
              langcheck --spike              input/focus observer harness (ADR-0002)\n  \
              langcheck --replace-demo       SendInput replacement + integrity skip",
@@ -328,6 +330,30 @@ fn run_tsf_selftest() {
         Err(e) => eprintln!(
             "TSF adapter IPC self-test FAILED: {e}\n(is `langcheck --broker-serve` or `--background` running?)"
         ),
+    }
+}
+
+/// `--tsf-comtest`: load the TSF adapter DLL and run its `LangCheckComSelfTest`
+/// export, which drives the COM activation + focus-sink path through a real TSF
+/// thread manager with no host app. Confirms the sink wiring doesn't fault and that
+/// focus events reach the sink. No elevation, no broker needed.
+fn run_tsf_comtest() {
+    let Some(dll) = tsf_dll_path() else {
+        eprintln!("could not locate langcheck_tsf.dll next to the executable.");
+        return;
+    };
+    if !dll.exists() {
+        eprintln!("TSF adapter not found: {}", dll.display());
+        return;
+    }
+    match langcheck_windows::tsf::com_selftest(&dll) {
+        Ok(()) => {
+            println!("TSF adapter COM self-test PASSED (activate + focus sink advised + clean");
+            println!(
+                "teardown, no fault). Live focus/edit event delivery is verified in a host app."
+            );
+        }
+        Err(e) => eprintln!("TSF adapter COM self-test FAILED: {e}"),
     }
 }
 

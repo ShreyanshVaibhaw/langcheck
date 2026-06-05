@@ -15,21 +15,28 @@
 //!   registration is *machine-wide* and needs administrator elevation (like every
 //!   IME); the broker's `--register-tsf` self-elevates.
 //!
-//! STATUS: the COM server + per-machine TSF registration are implemented and
-//! **verified end-to-end on a real desktop** — an elevated register/unregister
-//! round-trip writes and cleanly removes the HKLM TIP + HKLM CLSID with no crash.
-//! The text input processor itself is still a **no-op** (it activates without
-//! touching input), so an activated profile cannot disturb host typing. Focus
-//! tracking, edit-session replacement, and broker IPC come next, each behind the
-//! fail-open contract; that in-process edit logic is the part still requiring
-//! dedicated host-process testing, since a bug there can destabilise host apps.
+//! STATUS (all verified on a real desktop where noted):
+//! - COM server + per-machine TSF registration — an elevated register/unregister
+//!   round-trip writes then cleanly removes the HKLM TIP + CLSID, no crash.
+//! - Broker IPC client (`ask_broker`) over the same-user pipe — `--tsf-selftest`
+//!   loads the DLL and confirms it reaches the broker (wierd → weird).
+//! - Activation advises a thread-manager focus sink — `--tsf-comtest` drives the
+//!   activate → advise → focus → deactivate path through a real TSF thread manager
+//!   with no fault (catches the COM-plumbing/AV class of bug without a host app).
+//!
+//! The service still **does not modify any text**: the focus sink is a no-op hook
+//! and `ask_broker` is not yet called from a live edit path. The per-context edit
+//! sink (detect a typed word), the edit-session range replacement (apply it), and
+//! host-process testing of that live path are the remaining work — that is where a
+//! bug could destabilise a host app, so it stays behind the fail-open contract.
 
 // COM/FFI requires `unsafe`; enforce a `// SAFETY:` comment on every unsafe block
 // (blueprint.md Section 12.4) rather than forbidding it.
 #![deny(clippy::undocumented_unsafe_blocks)]
 
 use core::ffi::c_void;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use langcheck_core::ipc::{Request, Response};
 use langcheck_core::Boundary;
@@ -52,8 +59,9 @@ use windows::Win32::System::Registry::{
     KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ,
 };
 use windows::Win32::UI::TextServices::{
-    CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, ITfCategoryMgr,
-    ITfInputProcessorProfiles, ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfThreadMgr,
+    CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfCategoryMgr,
+    ITfContext, ITfDocumentMgr, ITfInputProcessorProfiles, ITfSource, ITfTextInputProcessor,
+    ITfTextInputProcessor_Impl, ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl,
     GUID_TFCAT_TIP_KEYBOARD,
 };
 
@@ -71,18 +79,71 @@ fn release() {
     REF_COUNT.fetch_sub(1, Ordering::SeqCst);
 }
 
-/// The minimal text input processor.
-///
-/// Fail-open: activation is a no-op, so loading the service can never alter or
-/// block host-app typing. Real focus/edit handling is wired in later, behind a
-/// kill switch and the same fail-open contract.
+/// Set when `AdviseSink` succeeds during activation. Diagnostic only (lets the COM
+/// self-test confirm the focus sink registered without needing a host app).
+static ADVISE_OK: AtomicU32 = AtomicU32::new(0);
+
+/// Thread-manager event sink: observes focus/context changes. For now it only
+/// records focus events (fail-open, no edits); the per-context edit sink that
+/// detects typed words is layered on next. Every method returns `Ok` — a sink that
+/// errored back into TSF could destabilise the host's input.
+#[implement(ITfThreadMgrEventSink)]
+struct ThreadMgrSink;
+
+impl ThreadMgrSink {
+    fn new() -> Self {
+        add_ref();
+        Self
+    }
+}
+
+impl Drop for ThreadMgrSink {
+    fn drop(&mut self) {
+        release();
+    }
+}
+
+impl ITfThreadMgrEventSink_Impl for ThreadMgrSink_Impl {
+    fn OnInitDocumentMgr(&self, _dim: Option<&ITfDocumentMgr>) -> Result<()> {
+        Ok(())
+    }
+    fn OnUninitDocumentMgr(&self, _dim: Option<&ITfDocumentMgr>) -> Result<()> {
+        Ok(())
+    }
+    fn OnSetFocus(
+        &self,
+        _focus: Option<&ITfDocumentMgr>,
+        _previous: Option<&ITfDocumentMgr>,
+    ) -> Result<()> {
+        // Hook point: the next increment advises a per-context edit sink on the
+        // newly focused document here (to detect typed words). For now, no-op —
+        // observing focus must never disturb the host.
+        Ok(())
+    }
+    fn OnPushContext(&self, _context: Option<&ITfContext>) -> Result<()> {
+        Ok(())
+    }
+    fn OnPopContext(&self, _context: Option<&ITfContext>) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// The text input processor. On activation it advises a thread-manager event sink
+/// so it can track focus. Fail-open throughout: if advising fails the service is
+/// simply inert and can never block or alter host typing.
 #[implement(ITfTextInputProcessor)]
-struct TextService;
+struct TextService {
+    /// The thread manager's event source + our advise cookie, kept so we can
+    /// unadvise on deactivation. `None` until activated.
+    advise: RefCell<Option<(ITfSource, u32)>>,
+}
 
 impl TextService {
     fn new() -> Self {
         add_ref();
-        Self
+        Self {
+            advise: RefCell::new(None),
+        }
     }
 }
 
@@ -93,13 +154,31 @@ impl Drop for TextService {
 }
 
 impl ITfTextInputProcessor_Impl for TextService_Impl {
-    fn Activate(&self, _thread_mgr: Option<&ITfThreadMgr>, _client_id: u32) -> Result<()> {
-        // Fail open: do nothing until exact-range editing is verified against a
-        // real host app. A no-op activation cannot disturb the host.
+    fn Activate(&self, thread_mgr: Option<&ITfThreadMgr>, _client_id: u32) -> Result<()> {
+        // Fail open: advise the focus sink, but never fail activation if we cannot —
+        // an inert service is always safe.
+        if let Some(thread_mgr) = thread_mgr {
+            if let Ok(source) = thread_mgr.cast::<ITfSource>() {
+                let sink: ITfThreadMgrEventSink = ThreadMgrSink::new().into();
+                // SAFETY: `source` is the thread manager's event source and `sink`
+                // is a valid COM object; AdviseSink returns a cookie on success.
+                let advised = unsafe { source.AdviseSink(&ITfThreadMgrEventSink::IID, &sink) };
+                if let Ok(cookie) = advised {
+                    ADVISE_OK.fetch_add(1, Ordering::SeqCst);
+                    *self.advise.borrow_mut() = Some((source, cookie));
+                }
+            }
+        }
         Ok(())
     }
 
     fn Deactivate(&self) -> Result<()> {
+        if let Some((source, cookie)) = self.advise.borrow_mut().take() {
+            // SAFETY: `source`/`cookie` are exactly the pair returned by AdviseSink.
+            unsafe {
+                let _ = source.UnadviseSink(cookie);
+            }
+        }
         Ok(())
     }
 }
@@ -199,6 +278,58 @@ extern "system" fn LangCheckIpcSelfTest() -> HRESULT {
     } else {
         E_FAIL
     }
+}
+
+/// Diagnostic export: exercise the COM activation + focus-sink path WITHOUT a host
+/// app. Creates a real TSF thread manager, activates our text service (which advises
+/// the focus sink), focuses a document so `OnSetFocus` fires, then deactivates.
+/// Returns `S_OK` only if nothing faulted and the focus sink was actually called —
+/// catching the class of COM bug (e.g. a stale-reference access violation) that
+/// would otherwise only surface inside a host app. Driven by `--tsf-comtest`.
+#[no_mangle]
+extern "system" fn LangCheckComSelfTest() -> HRESULT {
+    ADVISE_OK.store(0, Ordering::SeqCst);
+    match com_selftest() {
+        // A COM call faulted/failed — surface its real HRESULT to localise the cause.
+        Err(error) => error.code(),
+        // AdviseSink failed during activation (the sink never registered).
+        Ok(()) if ADVISE_OK.load(Ordering::SeqCst) == 0 => HRESULT(0x8004_3001u32 as i32),
+        // Clean: the activate -> advise -> create/focus -> deactivate path ran
+        // without faulting and the focus sink registered. Actual focus/edit *event
+        // delivery* only fires under a real host (it needs a text store), so that is
+        // confirmed by host testing rather than this synthetic harness.
+        Ok(()) => S_OK,
+    }
+}
+
+/// Body of [`LangCheckComSelfTest`], in a `Result` for `?` convenience.
+fn com_selftest() -> Result<()> {
+    // SAFETY: standard apartment-threaded COM init for this (STA) thread.
+    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let outcome = (|| -> Result<()> {
+        // SAFETY: CLSID_TF_ThreadMgr is the TSF thread-manager singleton.
+        let thread_mgr: ITfThreadMgr =
+            unsafe { CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER) }?;
+        // SAFETY: activate this thread's TSF manager; returns a client id.
+        let client_id = unsafe { thread_mgr.Activate() }?;
+        let service: ITfTextInputProcessor = TextService::new().into();
+        // SAFETY: drive our own Activate with the real thread manager (advises sink).
+        unsafe { service.Activate(&thread_mgr, client_id) }?;
+        // SAFETY: create and focus a document manager — fires OnSetFocus.
+        let document = unsafe { thread_mgr.CreateDocumentMgr() }?;
+        // SAFETY: focusing the new (empty) document manager.
+        let _ = unsafe { thread_mgr.SetFocus(&document) };
+        // SAFETY: tear down in order — our Deactivate unadvises the sink, then the
+        // thread manager is deactivated.
+        unsafe {
+            service.Deactivate()?;
+            thread_mgr.Deactivate()?;
+        }
+        Ok(())
+    })();
+    // SAFETY: balance CoInitializeEx on this thread.
+    unsafe { CoUninitialize() };
+    outcome
 }
 
 // ---------------------------------------------------------------------------

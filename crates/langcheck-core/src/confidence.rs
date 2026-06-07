@@ -25,6 +25,13 @@ pub struct ConfidencePolicy {
     /// The top candidate must beat the second by at least this margin to autocorrect
     /// (prevents correcting ambiguous typos with several near rivals).
     pub min_margin: f64,
+    /// Frequency-dominance tie-break: when the top candidate is at least this many
+    /// times more frequent than the runner-up — and no farther in edit distance — it
+    /// counts as a confident choice even if the raw score margin is below
+    /// `min_margin`. This distinguishes a clear winner (e.g. `hause`→`house`, where
+    /// "house" is ~3.5× "cause") from a genuine toss-up (e.g. `moin`, where "main"
+    /// and "join" are within ~1.1×, which stays ambiguous). Set to 0 to disable.
+    pub freq_dominance_ratio: u32,
 }
 
 impl Default for ConfidencePolicy {
@@ -33,6 +40,7 @@ impl Default for ConfidencePolicy {
             max_auto_score: 1_100.0,
             max_suggest_score: 2_100.0,
             min_margin: 250.0,
+            freq_dominance_ratio: 3,
         }
     }
 }
@@ -155,7 +163,26 @@ pub fn decide(
     }
 
     let margin_ok = match scored.get(1) {
-        Some(second) => (second.score - top.score) >= policy.min_margin,
+        Some(second) => {
+            let score_margin_ok = (second.score - top.score) >= policy.min_margin;
+            // Frequency-dominance tie-break (see `freq_dominance_ratio`): a clearly
+            // more-common word is a confident pick even when the score margin is slim.
+            // Compare against the most frequent EQUALLY-CLOSE rival — not merely the
+            // runner-up by score — because a keyboard-adjacency bonus can lift a
+            // slightly rarer word to 2nd place while a near-equally-frequent rival
+            // (the real source of ambiguity, e.g. "main" for "moin") sits just behind.
+            let freq_dominates = policy.freq_dominance_ratio > 0 && {
+                let rival_max_freq = scored[1..]
+                    .iter()
+                    .filter(|c| c.candidate.edit_distance <= top.candidate.edit_distance)
+                    .map(|c| c.candidate.frequency)
+                    .max()
+                    .unwrap_or(0);
+                top.candidate.frequency
+                    >= rival_max_freq.saturating_mul(policy.freq_dominance_ratio)
+            };
+            score_margin_ok || freq_dominates
+        }
         None => true,
     };
     let auto_ok = top.score <= policy.max_auto_score;
@@ -281,6 +308,39 @@ mod tests {
             }
             other => panic!("expected ambiguous Suggest, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn frequency_dominant_winner_autocorrects_despite_slim_score_margin() {
+        // Same edit distance and a slim score margin, but the top candidate is more
+        // than freq_dominance_ratio (3x) as frequent -> a confident pick. Mirrors the
+        // real "hause" case, where "house" is ~3.5x "cause".
+        let decision = eval(
+            &snapshot("hause"),
+            false,
+            &[lex("house", 1, 900), lex("cause", 1, 250)],
+        );
+        match decision {
+            CorrectionDecision::AutoCorrect { candidate } => {
+                assert_eq!(candidate.replacement, "house");
+            }
+            other => panic!("expected AutoCorrect house, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn frequency_near_tie_stays_ambiguous() {
+        // Same edit distance, slim score margin, and only ~1.1x more frequent -> not
+        // safe to choose. Mirrors "moin" (main vs join): must not autocorrect.
+        let decision = eval(
+            &snapshot("moin"),
+            false,
+            &[lex("main", 1, 900), lex("join", 1, 820)],
+        );
+        assert!(
+            !matches!(decision, CorrectionDecision::AutoCorrect { .. }),
+            "near-frequency-tie must not autocorrect, got {decision:?}"
+        );
     }
 
     #[test]

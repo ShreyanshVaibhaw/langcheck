@@ -55,6 +55,19 @@ fn corpus_lexicon() -> FakeLexicon {
         ("can", 470),
         ("cap", 460),
         ("cab", 450),
+        // A frequency-dominant cluster: "house" clearly beats "cause" (>3x), so the
+        // dominance tie-break should pick it for "hause".
+        ("house", 900),
+        ("cause", 250),
+        // A near-frequency cluster: "main" and "join" are within ~1.1x, so "moin"
+        // must stay ambiguous even with the tie-break. "moon" is a rare third
+        // neighbour that, combined with the keyboard-adjacency bonus on "join", makes
+        // "join" the top by score and "moon" the runner-up — so the tie-break must
+        // compare "join" against the most frequent *rival* ("main"), not the runner-up
+        // ("moon"), or it would wrongly fire. This is the regression guard for that.
+        ("main", 900),
+        ("join", 820),
+        ("moon", 200),
     ];
     FakeLexicon::new(
         LanguageTag::EnUs,
@@ -102,14 +115,17 @@ fn corpus_precision_and_behavior() {
         ("seperate", "separate"),
         ("freind", "friend"),
         ("wierd", "weird"),
-        ("wrd", "word"), // lexicon single-edit insertion
+        ("goverment", "government"), // newer curated rule
+        ("wrd", "word"),             // lexicon single-edit insertion
         ("helo", "hello"),
         ("frend", "friend"),
+        ("hause", "house"), // frequency-dominance tie-break (house >3x cause)
     ];
     // Correctly-spelled words — must be left alone (Known).
     let known_words = ["hello", "friend", "the", "world", "because", "azure"];
-    // Ambiguous typos (several near rivals) — must NOT autocorrect.
-    let ambiguous = ["caz", "cas"];
+    // Ambiguous typos (several near rivals) — must NOT autocorrect. "moin" has two
+    // near-equally-frequent neighbours (main/join), so the tie-break must not fire.
+    let ambiguous = ["caz", "cas", "moin"];
     // Non-prose tokens — ineligible.
     let non_prose = ["user@host", "src/main", "foo_bar", "h3llo"];
     // Real-but-unknown word with no close match — must invent nothing.

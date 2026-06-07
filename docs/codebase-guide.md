@@ -379,10 +379,22 @@ The default policy has:
 
 - max autocorrect score,
 - max suggestion score,
-- minimum margin between best and second-best candidate.
+- minimum margin between best and second-best candidate,
+- a frequency-dominance ratio (default 3).
 
 This margin is what prevents ambiguous typos like `cas` from being rewritten when
 several words are similarly plausible.
+
+The frequency-dominance ratio is an escape hatch from the margin rule for the
+common case where several real words are equally *close* but one is far more
+*common*. When the top candidate is at least the ratio (3×) as frequent as the
+most frequent equally-close rival, it is treated as a confident pick even if the
+raw score margin is slim. This is what lets `hause`→`house` (house is ~3.5×
+"cause") autocorrect, while `moin` stays untouched (its rivals `main` and `join`
+are within ~1.1×, so none dominates). The comparison is against the most frequent
+equally-close rival — not merely the runner-up by score — because a
+keyboard-adjacency bonus can otherwise reorder the top two and hide the real
+ambiguity.
 
 ### 10. Replacement Uses SendInput
 

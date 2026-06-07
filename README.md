@@ -62,6 +62,7 @@ See [`blueprint.md`](blueprint.md) Section 1.1 and [`SECURITY.md`](SECURITY.md).
 | [`crates/langcheck-tsf`](crates/langcheck-tsf) | Opt-in TSF precision adapter (in-process COM text service) for rich/web editors. |
 | [`crates/langcheck-bench`](crates/langcheck-bench) | Benchmarks for the hot path and lexicon. |
 | [`tools/dictionary-compiler`](tools/dictionary-compiler) | Build-time tool that compiles the FST lexicon. |
+| [`docs/codebase-guide.md`](docs/codebase-guide.md) | Top-to-bottom tour of the codebase for first-time readers. |
 | [`docs/adr`](docs/adr) | Architecture Decision Records. |
 
 `langcheck-core` must never depend on Windows APIs, UI frameworks, or a concrete

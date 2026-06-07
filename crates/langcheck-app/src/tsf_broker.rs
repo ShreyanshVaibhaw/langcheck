@@ -45,6 +45,9 @@ pub fn serve(
         // Re-read the kill switches per connection: the global enable/pause AND the
         // TSF-adapter-specific switch must all be on to apply a correction.
         let active = shared.enabled() && !shared.paused() && shared.tsf_enabled();
+        // Suggest-only mode detects but never replaces, on the TSF path too — so the
+        // adapter never applies a correction the MVP keystroke path is holding back.
+        let suggest_only = shared.suggest_only();
         let outcome = server.serve_one(|request| {
             // Any adapter contact (the focus beacon OR a word eval) means TSF is
             // handling the foreground window — record it so the MVP keystroke path
@@ -61,8 +64,9 @@ pub fn serve(
                 }
             }
             match request {
-                // Kill switch engaged: acknowledge an Evaluate but never correct.
-                Request::Evaluate { .. } if !active => Response::Leave,
+                // Kill switch engaged, or suggest-only mode: acknowledge an Evaluate
+                // but never replace (suggest-only is "detect, don't auto-replace").
+                Request::Evaluate { .. } if !active || suggest_only => Response::Leave,
                 // Ping/Active -> Pong; Evaluate -> shared engine decision.
                 other => engine::evaluate_request(other, &*lexicon, &personal, &weights, &policy),
             }

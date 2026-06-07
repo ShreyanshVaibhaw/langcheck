@@ -70,6 +70,11 @@ pub struct SharedState {
     /// TSF-adapter-specific kill switch: when false, the TSF broker answers every
     /// Evaluate with "leave" (the MVP path is unaffected).
     pub tsf_enabled: AtomicBool,
+    /// Suggest-only mode (`CorrectionMode::Suggest`): the engine still decides, but
+    /// a confident auto-correction is held back rather than applied — "detect but
+    /// never replace automatically" (`blueprint.md` correction modes; the candidate
+    /// popup UI is post-MVP). The MVP surfaces it only as a metric for now.
+    pub suggest_only: AtomicBool,
     /// Focus id for which the TSF adapter most recently asked the broker to evaluate
     /// a word (0 = none). With `tsf_active_at_ms`, lets the MVP path defer where the
     /// adapter is handling text, so they never both correct the same word.
@@ -87,6 +92,7 @@ impl SharedState {
             enabled: AtomicBool::new(true),
             paused: AtomicBool::new(false),
             tsf_enabled: AtomicBool::new(true),
+            suggest_only: AtomicBool::new(false),
             tsf_active_focus: AtomicU64::new(0),
             tsf_active_at_ms: AtomicU64::new(0),
             shutdown: AtomicBool::new(false),
@@ -103,6 +109,10 @@ impl SharedState {
 
     pub fn tsf_enabled(&self) -> bool {
         self.tsf_enabled.load(Ordering::SeqCst)
+    }
+
+    pub fn suggest_only(&self) -> bool {
+        self.suggest_only.load(Ordering::SeqCst)
     }
 
     /// Record that the TSF adapter just asked about a word in `focus_id` (called by
@@ -389,16 +399,27 @@ impl Coordinator {
             &self.policy,
             deadline,
         );
+        // Suggest-only mode (`CorrectionMode::Suggest`) detects but never replaces
+        // automatically: a confident AutoCorrect is downgraded to a surfaced
+        // suggestion (the candidate popup UI is post-MVP) and counted as such.
+        let suggest_only = self.shared.suggest_only();
         match &decision {
             CorrectionDecision::Known => Metrics::inc(&self.metrics.known),
             CorrectionDecision::Ignore(_) => Metrics::inc(&self.metrics.ignored),
             CorrectionDecision::Suggest { .. } => Metrics::inc(&self.metrics.suggested),
+            CorrectionDecision::AutoCorrect { .. } if suggest_only => {
+                Metrics::inc(&self.metrics.suggested)
+            }
             CorrectionDecision::AutoCorrect { .. } => Metrics::inc(&self.metrics.autocorrected),
         }
 
         let CorrectionDecision::AutoCorrect { candidate } = decision else {
             return;
         };
+        // Honour the suggest-only contract: counted above, but never applied.
+        if suggest_only {
+            return;
+        }
 
         // Honour blocked pairs and session suppression (pairs rejected via undo).
         let pair = (
@@ -522,5 +543,14 @@ mod tests {
         assert!(!tsf_defer(7, now, 42, now));
         // Unknown focus (0) is never deferred.
         assert!(!tsf_defer(0, now, 0, now));
+    }
+
+    #[test]
+    fn suggest_only_defaults_off_and_round_trips() {
+        let shared = SharedState::new();
+        // Default is conservative auto-correct (apply), not suggest-only.
+        assert!(!shared.suggest_only());
+        shared.suggest_only.store(true, Ordering::SeqCst);
+        assert!(shared.suggest_only());
     }
 }

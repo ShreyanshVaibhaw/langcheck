@@ -151,6 +151,9 @@ fn run_background() {
     shared
         .tsf_enabled
         .store(config.tsf_adapter_enabled, Ordering::SeqCst);
+    shared
+        .suggest_only
+        .store(config.mode == CorrectionMode::Suggest, Ordering::SeqCst);
     let metrics = Arc::new(Metrics::default());
 
     let (observer, focus_thread, coordinator_thread) =
@@ -312,6 +315,9 @@ fn run_broker_serve() {
     shared
         .tsf_enabled
         .store(config.tsf_adapter_enabled, Ordering::SeqCst);
+    shared
+        .suggest_only
+        .store(config.mode == CorrectionMode::Suggest, Ordering::SeqCst);
     println!("LangCheck IPC broker serving on the per-user pipe. Press Ctrl-C to stop.");
     if !config.tsf_adapter_enabled {
         println!("NOTE: the TSF adapter kill switch is OFF — every evaluate is answered 'leave'.");
@@ -439,6 +445,10 @@ fn run_autocorrect() {
     // Apply persisted settings: correction is active only if enabled and not Off.
     let active = config.enabled && config.mode != CorrectionMode::Off;
     shared.enabled.store(active, Ordering::SeqCst);
+    // Suggest mode detects but never replaces automatically.
+    shared
+        .suggest_only
+        .store(config.mode == CorrectionMode::Suggest, Ordering::SeqCst);
     let metrics = Arc::new(Metrics::default());
 
     let (observer, focus_thread, coordinator_thread) =

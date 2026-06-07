@@ -1097,17 +1097,20 @@ If you are new, read in this order:
 These are not the design intent; they are important observations about the current
 checkout.
 
-### `CorrectionMode::Suggest` Is Defined But Not Fully Wired
+### `CorrectionMode::Suggest` Has No Candidate Popup Yet
 
-The config enum defines `Suggest`, but the startup path currently only treats
-`Off` specially. That means `Suggest` mode may still behave like conservative
-autocorrect unless additional coordinator logic is added.
+`Suggest` mode is wired for safety — startup sets `SharedState::suggest_only`, and
+both correction paths (the coordinator and the TSF broker) detect a confident
+correction but **never apply it automatically**, counting it as a suggestion
+instead. What is still missing is the post-MVP part: a UI that actually shows the
+suggested candidate to the user. So today, suggest mode means "detect, don't
+replace, no surface" rather than "detect and offer."
 
 Relevant files:
 
-- [`crates/langcheck-app/src/config.rs`](../crates/langcheck-app/src/config.rs)
-- [`crates/langcheck-app/src/main.rs`](../crates/langcheck-app/src/main.rs)
-- [`crates/langcheck-app/src/coordinator.rs`](../crates/langcheck-app/src/coordinator.rs)
+- [`crates/langcheck-app/src/main.rs`](../crates/langcheck-app/src/main.rs) (sets the flag from config)
+- [`crates/langcheck-app/src/coordinator.rs`](../crates/langcheck-app/src/coordinator.rs) (holds back the MVP path)
+- [`crates/langcheck-app/src/tsf_broker.rs`](../crates/langcheck-app/src/tsf_broker.rs) (holds back the TSF path)
 
 ### Some Windows Behavior Requires Manual Verification
 

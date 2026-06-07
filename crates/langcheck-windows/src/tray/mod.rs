@@ -17,16 +17,16 @@ use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
-    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
-    NOTIFYICONDATAW,
+    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD,
+    NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     DispatchMessageW, GetCursorPos, GetMessageW, LoadIconW, PostQuitMessage, RegisterClassExW,
-    SetForegroundWindow, TrackPopupMenu, TranslateMessage, HMENU, HWND_MESSAGE, IDI_APPLICATION,
-    MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, SW_SHOWNORMAL, TPM_RIGHTBUTTON, WINDOW_EX_STYLE,
-    WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSEXW,
-    WS_OVERLAPPED,
+    SetForegroundWindow, TrackPopupMenu, TranslateMessage, HICON, HMENU, HWND_MESSAGE,
+    IDI_APPLICATION, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, SW_SHOWNORMAL, TPM_RIGHTBUTTON,
+    WINDOW_EX_STYLE, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP,
+    WNDCLASSEXW, WS_OVERLAPPED,
 };
 
 /// Tray callback message (`WM_APP + 1`).
@@ -123,6 +123,24 @@ fn run_tray_inner() -> windows::core::Result<()> {
     Ok(())
 }
 
+/// The tray icon: the executable's embedded application icon (resource id 1) if
+/// present, otherwise the default Windows application icon.
+fn load_tray_icon() -> HICON {
+    // SAFETY: this process's module handle; a null handle is tolerated below.
+    let hinstance = unsafe { GetModuleHandleW(None) }
+        .map(|m| HINSTANCE(m.0))
+        .unwrap_or_default();
+    // Resource id 1 as MAKEINTRESOURCE — a sentinel pointer value (address 1, never
+    // dereferenced), not a real/dangling pointer; `without_provenance` says so.
+    let resource_id = PCWSTR(std::ptr::without_provenance::<u16>(1));
+    // SAFETY: try the embedded app icon (numeric resource id 1) from our module.
+    if let Ok(icon) = unsafe { LoadIconW(hinstance, resource_id) } {
+        return icon;
+    }
+    // SAFETY: fall back to the shared predefined application icon.
+    unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default()
+}
+
 fn notify_icon_data(hwnd: HWND) -> NOTIFYICONDATAW {
     let mut data = NOTIFYICONDATAW {
         cbSize: u32::try_from(std::mem::size_of::<NOTIFYICONDATAW>()).unwrap(),
@@ -132,15 +150,34 @@ fn notify_icon_data(hwnd: HWND) -> NOTIFYICONDATAW {
         uCallbackMessage: WM_TRAYCALLBACK,
         ..Default::default()
     };
-    // SAFETY: loading a shared system icon (no module, predefined IDI_APPLICATION).
-    if let Ok(icon) = unsafe { LoadIconW(None, IDI_APPLICATION) } {
-        data.hIcon = icon;
-    }
-    let tip = "LangCheck";
+    data.hIcon = load_tray_icon();
+    let tip = "LangCheck — spelling autocorrect";
     for (slot, ch) in data.szTip.iter_mut().zip(tip.encode_utf16()) {
         *slot = ch;
     }
     data
+}
+
+/// Show a tray balloon/toast (NIF_INFO) reflecting a state change.
+fn show_balloon(hwnd: HWND, title: &str, message: &str) {
+    let mut data = NOTIFYICONDATAW {
+        cbSize: u32::try_from(std::mem::size_of::<NOTIFYICONDATAW>()).unwrap(),
+        hWnd: hwnd,
+        uID: TRAY_UID,
+        uFlags: NIF_INFO,
+        dwInfoFlags: NIIF_INFO,
+        ..Default::default()
+    };
+    for (slot, ch) in data.szInfoTitle.iter_mut().zip(title.encode_utf16()) {
+        *slot = ch;
+    }
+    for (slot, ch) in data.szInfo.iter_mut().zip(message.encode_utf16()) {
+        *slot = ch;
+    }
+    // SAFETY: `data` targets the icon we added; NIM_MODIFY+NIF_INFO shows a balloon.
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
+    }
 }
 
 fn add_icon(hwnd: HWND) -> windows::core::Result<()> {
@@ -207,23 +244,31 @@ fn show_menu(hwnd: HWND) {
         };
         let status_text = if status.enabled {
             if status.paused {
-                "Status: Paused"
+                "LangCheck: paused"
             } else {
-                "Status: Enabled"
+                "LangCheck: correcting"
             }
         } else {
-            "Status: Disabled"
+            "LangCheck: off"
         };
         let _ = AppendMenuW(menu, MF_GRAYED, ID_STATUS, &HSTRING::from(status_text));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let enable_label = if status.enabled { "Disable" } else { "Enable" };
+        let enable_label = if status.enabled {
+            "Turn correction off"
+        } else {
+            "Turn correction on"
+        };
         let _ = AppendMenuW(
             menu,
             MF_STRING,
             ID_TOGGLE_ENABLED,
             &HSTRING::from(enable_label),
         );
-        let pause_label = if status.paused { "Resume" } else { "Pause" };
+        let pause_label = if status.paused {
+            "Resume corrections"
+        } else {
+            "Pause corrections"
+        };
         let _ = AppendMenuW(
             menu,
             MF_STRING,
@@ -231,7 +276,7 @@ fn show_menu(hwnd: HWND) {
             &HSTRING::from(pause_label),
         );
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_SETTINGS, w!("Open settings"));
+        let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_SETTINGS, w!("Open settings file"));
         let _ = AppendMenuW(menu, MF_STRING, ID_EXIT, w!("Exit LangCheck"));
 
         let mut point = POINT::default();
@@ -260,8 +305,24 @@ fn handle_command(hwnd: HWND, id: usize) {
     TRAY_HANDLER.with(|cell| {
         if let Some(handler) = cell.borrow().as_ref() {
             match id {
-                ID_TOGGLE_ENABLED => handler.toggle_enabled(),
-                ID_TOGGLE_PAUSE => handler.toggle_pause(),
+                ID_TOGGLE_ENABLED => {
+                    handler.toggle_enabled();
+                    let message = if handler.status().enabled {
+                        "Correction turned on."
+                    } else {
+                        "Correction turned off."
+                    };
+                    show_balloon(hwnd, "LangCheck", message);
+                }
+                ID_TOGGLE_PAUSE => {
+                    handler.toggle_pause();
+                    let message = if handler.status().paused {
+                        "Corrections paused."
+                    } else {
+                        "Corrections resumed."
+                    };
+                    show_balloon(hwnd, "LangCheck", message);
+                }
                 ID_OPEN_SETTINGS => handler.open_settings(),
                 _ => {}
             }

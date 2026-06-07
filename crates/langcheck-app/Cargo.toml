@@ -21,3 +21,7 @@ langcheck-lexicon = { path = "../langcheck-lexicon" }
 langcheck-windows = { path = "../langcheck-windows" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+
+# Build-time only: embed the application icon (resource id 1) into langcheck.exe.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

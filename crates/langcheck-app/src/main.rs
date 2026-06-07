@@ -99,6 +99,16 @@ impl TrayHandler for BrokerTrayHandler {
         self.shared.paused.store(next, Ordering::SeqCst);
     }
 
+    fn toggle_tsf(&self) {
+        // Live effect (the TSF broker reads shared.tsf_enabled per request); also
+        // persist so the choice survives a restart.
+        let next = !self.shared.tsf_enabled();
+        self.shared.tsf_enabled.store(next, Ordering::SeqCst);
+        let mut config = persistence::load_config();
+        config.tsf_adapter_enabled = next;
+        let _ = persistence::save_config(&config);
+    }
+
     fn open_settings(&self) {
         if let Some(path) = &self.config_path {
             tray::open_path(&path.to_string_lossy());
@@ -113,6 +123,7 @@ impl TrayHandler for BrokerTrayHandler {
         TrayStatus {
             enabled: self.shared.enabled(),
             paused: self.shared.paused(),
+            tsf_enabled: self.shared.tsf_enabled(),
         }
     }
 }

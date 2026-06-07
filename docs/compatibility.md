@@ -56,7 +56,8 @@ type. Controls:
 
 - `langcheck --tsf-disable` / `--tsf-enable` — kill switch: stop/allow TSF
   corrections **without** unregistering (the MVP path is unaffected). `--status`
-  shows the current state.
+  shows the current state. Also a **live toggle in the tray menu** ("Turn
+  rich-editor corrections on/off") when running `--background`.
 - `langcheck --unregister-tsf` — remove the adapter entirely (self-elevates).
 - `langcheck --tsf-comtest` / `--tsf-selftest` — diagnostics: COM activation and
   broker connectivity, without a host app.

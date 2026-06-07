@@ -36,6 +36,7 @@ const ID_TOGGLE_ENABLED: usize = 2;
 const ID_TOGGLE_PAUSE: usize = 3;
 const ID_OPEN_SETTINGS: usize = 4;
 const ID_EXIT: usize = 5;
+const ID_TOGGLE_TSF: usize = 6;
 const TRAY_UID: u32 = 1;
 
 /// Current state shown in the menu.
@@ -43,6 +44,8 @@ const TRAY_UID: u32 = 1;
 pub struct TrayStatus {
     pub enabled: bool,
     pub paused: bool,
+    /// Whether the optional TSF (rich/web-editor) corrections are enabled.
+    pub tsf_enabled: bool,
 }
 
 /// Actions the tray menu invokes on the broker. Methods run on the tray thread.
@@ -51,6 +54,8 @@ pub trait TrayHandler {
     fn toggle_enabled(&self);
     /// Toggle pause.
     fn toggle_pause(&self);
+    /// Toggle the TSF (rich/web-editor) adapter's corrections (its kill switch).
+    fn toggle_tsf(&self);
     /// Open the settings (the config file) for editing.
     fn open_settings(&self);
     /// Request shutdown (the tray then exits its loop).
@@ -275,6 +280,12 @@ fn show_menu(hwnd: HWND) {
             ID_TOGGLE_PAUSE,
             &HSTRING::from(pause_label),
         );
+        let tsf_label = if status.tsf_enabled {
+            "Turn rich-editor corrections off"
+        } else {
+            "Turn rich-editor corrections on"
+        };
+        let _ = AppendMenuW(menu, MF_STRING, ID_TOGGLE_TSF, &HSTRING::from(tsf_label));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_SETTINGS, w!("Open settings file"));
         let _ = AppendMenuW(menu, MF_STRING, ID_EXIT, w!("Exit LangCheck"));
@@ -320,6 +331,15 @@ fn handle_command(hwnd: HWND, id: usize) {
                         "Corrections paused."
                     } else {
                         "Corrections resumed."
+                    };
+                    show_balloon(hwnd, "LangCheck", message);
+                }
+                ID_TOGGLE_TSF => {
+                    handler.toggle_tsf();
+                    let message = if handler.status().tsf_enabled {
+                        "Rich-editor (TSF) corrections on."
+                    } else {
+                        "Rich-editor (TSF) corrections off."
                     };
                     show_balloon(hwnd, "LangCheck", message);
                 }

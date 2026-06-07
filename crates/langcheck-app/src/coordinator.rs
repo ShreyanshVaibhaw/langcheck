@@ -57,9 +57,6 @@ use langcheck_windows::replace::{ReplacementExecutor, ReplacementPlan, SendInput
 
 use crate::diagnostics::Metrics;
 
-/// Per-request engine deadline (`blueprint.md` Section 8.13 `[performance]`).
-const DECISION_DEADLINE_MS: u64 = 15;
-
 /// State shared between the focus thread (writer of `focus_id`), the coordinator,
 /// and the UI/main thread (the enable/pause kill switch).
 #[derive(Debug)]
@@ -206,6 +203,9 @@ pub struct Coordinator {
     undo: UndoState,
     undo_recorded_at: Option<Instant>,
     undo_window: Duration,
+    /// Per-word engine budget (`config.performance.decision_deadline_ms`); the
+    /// decision is abandoned rather than allowed to stall the keystroke path.
+    decision_deadline: Duration,
     /// Pairs rejected twice via undo this session; never re-applied until restart.
     session_blocklist: HashSet<(String, String)>,
     /// Pairs undone once (a single rejection only restores; a repeat suppresses).
@@ -213,15 +213,18 @@ pub struct Coordinator {
 }
 
 impl Coordinator {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         lexicon: Box<dyn LexiconProvider>,
         personal: PersonalDictionary,
         undo_window: Duration,
+        decision_deadline: Duration,
+        max_token_chars: usize,
         shared: Arc<SharedState>,
         metrics: Arc<Metrics>,
     ) -> Self {
         Self {
-            session: Session::new(SessionConfig::default()),
+            session: Session::new(SessionConfig { max_token_chars }),
             translator: KeyTranslator::default(),
             lexicon,
             personal,
@@ -233,6 +236,7 @@ impl Coordinator {
             undo: UndoState::new(),
             undo_recorded_at: None,
             undo_window,
+            decision_deadline,
             session_blocklist: HashSet::new(),
             undo_history: HashSet::new(),
         }
@@ -374,7 +378,7 @@ impl Coordinator {
             return;
         }
 
-        let deadline = Some(Instant::now() + Duration::from_millis(DECISION_DEADLINE_MS));
+        let deadline = Some(Instant::now() + self.decision_deadline);
         // The candidate assembly + confidence policy is shared with the TSF IPC
         // handler so the two paths never diverge (see `crate::engine::decide`).
         let decision = crate::engine::decide(

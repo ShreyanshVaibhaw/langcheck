@@ -1109,16 +1109,6 @@ Relevant files:
 - [`crates/langcheck-app/src/main.rs`](../crates/langcheck-app/src/main.rs)
 - [`crates/langcheck-app/src/coordinator.rs`](../crates/langcheck-app/src/coordinator.rs)
 
-### Config Performance Knobs Are Not Fully Wired
-
-`decision_deadline_ms` and `max_token_chars` exist in config, but the coordinator
-currently uses a hardcoded decision deadline and `SessionConfig::default()`.
-
-Relevant files:
-
-- [`crates/langcheck-app/src/config.rs`](../crates/langcheck-app/src/config.rs)
-- [`crates/langcheck-app/src/coordinator.rs`](../crates/langcheck-app/src/coordinator.rs)
-
 ### Some Windows Behavior Requires Manual Verification
 
 The source contains strong safety structure, but UI Automation focus detection,

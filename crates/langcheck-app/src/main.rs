@@ -503,6 +503,8 @@ fn start_engine(
         .map(|dir| PersonalDictionary::load_dir(&dir))
         .unwrap_or_default();
     let undo_window = Duration::from_millis(config.undo_window_ms);
+    let decision_deadline = Duration::from_millis(config.performance.decision_deadline_ms);
+    let max_token_chars = config.performance.max_token_chars;
     let (tx, rx) = sync_channel(256);
     let observer = match LowLevelKeyboardObserver::start(tx) {
         Ok(observer) => observer,
@@ -543,6 +545,8 @@ fn start_engine(
             lexicon,
             personal,
             undo_window,
+            decision_deadline,
+            max_token_chars,
             coordinator_shared,
             coordinator_metrics,
         );

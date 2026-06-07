@@ -20,9 +20,12 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// How long after a TSF Evaluate the MVP path keeps deferring to the adapter for the
-/// same window (covers typing cadence; expires so other apps resume normally).
-const TSF_DEFER_WINDOW_MS: u64 = 2000;
+/// How long after the adapter's last contact (focus beacon or word eval) the MVP
+/// path keeps deferring to it **for that same window**. The focus beacon refreshes
+/// this on focus and every word refreshes it while typing, so it stays fresh during
+/// use; it is focus-scoped, so a stale value never suppresses correction in a
+/// *different* app. Generous enough to bridge a focus→first-keystroke gap.
+const TSF_DEFER_WINDOW_MS: u64 = 4000;
 
 /// Wall-clock milliseconds since the Unix epoch (used only for the coarse TSF-defer
 /// window; a small clock skew is harmless).

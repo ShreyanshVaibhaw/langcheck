@@ -35,6 +35,11 @@ pub enum Request {
     /// corrected. The broker replies with [`Response::Leave`] or
     /// [`Response::Replace`].
     Evaluate { token: String, boundary: Boundary },
+    /// Focus beacon: the adapter is now the active input method in the foreground
+    /// (sent on focus, before any word is typed). Lets the broker tell the MVP
+    /// keystroke path to stand down for that window before it can fire — avoiding a
+    /// race where both paths correct the same word. The broker replies [`Pong`].
+    Active,
 }
 
 /// A reply from the broker to the adapter.
@@ -80,6 +85,7 @@ impl std::error::Error for IpcError {}
 // Message tags.
 const TAG_PING: u8 = 0x01;
 const TAG_EVALUATE: u8 = 0x02;
+const TAG_ACTIVE: u8 = 0x03;
 const TAG_PONG: u8 = 0x01;
 const TAG_LEAVE: u8 = 0x02;
 const TAG_REPLACE: u8 = 0x03;
@@ -94,6 +100,7 @@ pub fn encode_request(request: &Request) -> Vec<u8> {
             out.push(boundary_to_u8(*boundary));
             put_string(&mut out, token);
         }
+        Request::Active => out.push(TAG_ACTIVE),
     }
     out
 }
@@ -110,6 +117,7 @@ pub fn decode_request(bytes: &[u8]) -> Result<Request, IpcError> {
             let token = take_string(&mut rest)?;
             Ok(Request::Evaluate { token, boundary })
         }
+        TAG_ACTIVE => Ok(Request::Active),
         other => Err(IpcError::UnknownTag(other)),
     }
 }
@@ -210,8 +218,9 @@ mod tests {
 
     #[test]
     fn request_round_trips() {
-        let ping = Request::Ping;
-        assert_eq!(decode_request(&encode_request(&ping)).unwrap(), ping);
+        for simple in [Request::Ping, Request::Active] {
+            assert_eq!(decode_request(&encode_request(&simple)).unwrap(), simple);
+        }
         for boundary in all_boundaries() {
             let req = Request::Evaluate {
                 token: "wierd".to_owned(),

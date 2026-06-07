@@ -241,7 +241,7 @@ mod tests {
 
     fn handler(request: Request) -> Response {
         match request {
-            Request::Ping => Response::Pong,
+            Request::Ping | Request::Active => Response::Pong,
             Request::Evaluate { token, .. } if token == "wierd" => Response::Replace {
                 replacement: "weird".to_owned(),
             },

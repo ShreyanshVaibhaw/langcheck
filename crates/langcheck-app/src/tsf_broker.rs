@@ -46,6 +46,13 @@ pub fn serve(
         // TSF-adapter-specific switch must all be on to apply a correction.
         let active = shared.enabled() && !shared.paused() && shared.tsf_enabled();
         let outcome = server.serve_one(|request| {
+            // Any adapter contact (the focus beacon OR a word eval) means TSF is
+            // handling the foreground window — record it so the MVP keystroke path
+            // stands down there. The beacon arrives on focus, before the first word,
+            // so the keystroke path defers before it can fire (no race).
+            if active && matches!(&request, Request::Active | Request::Evaluate { .. }) {
+                shared.note_tsf_activity(shared.focus_id.load(Ordering::SeqCst));
+            }
             if log_requests {
                 if let Request::Evaluate { .. } = request {
                     let n = evaluations.fetch_add(1, Ordering::SeqCst) + 1;
@@ -54,15 +61,10 @@ pub fn serve(
                 }
             }
             match request {
-                Request::Ping => Response::Pong,
-                request @ Request::Evaluate { .. } if active => {
-                    // Mark the TSF adapter as handling the foreground window so the
-                    // MVP SendInput path defers and they never double-correct.
-                    shared.note_tsf_activity(shared.focus_id.load(Ordering::SeqCst));
-                    engine::evaluate_request(request, &*lexicon, &personal, &weights, &policy)
-                }
-                // Kill switch engaged: acknowledge but never correct.
-                Request::Evaluate { .. } => Response::Leave,
+                // Kill switch engaged: acknowledge an Evaluate but never correct.
+                Request::Evaluate { .. } if !active => Response::Leave,
+                // Ping/Active -> Pong; Evaluate -> shared engine decision.
+                other => engine::evaluate_request(other, &*lexicon, &personal, &weights, &policy),
             }
         });
         // A transient client/IO error must not kill the broker; the instance was

@@ -95,7 +95,9 @@ pub fn evaluate_request(
     policy: &ConfidencePolicy,
 ) -> Response {
     let (token, _boundary): (String, Boundary) = match request {
-        Request::Ping => return Response::Pong,
+        // Liveness and the focus beacon are both simple acknowledgements; the broker
+        // records the beacon as activity (see `tsf_broker`) so the MVP path defers.
+        Request::Ping | Request::Active => return Response::Pong,
         Request::Evaluate { token, boundary } => (token, boundary),
     };
 

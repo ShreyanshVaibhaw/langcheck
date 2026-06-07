@@ -355,10 +355,17 @@ impl ITfThreadMgrEventSink_Impl for ThreadMgrSink_Impl {
         focus: Option<&ITfDocumentMgr>,
         _previous: Option<&ITfDocumentMgr>,
     ) -> Result<()> {
-        match focus {
-            Some(focus) => self.advise_edit(focus),
+        // Runs in the host process on focus changes; contain any panic at the FFI
+        // boundary (defence-in-depth; the body is fail-open).
+        contain_panic(|| match focus {
+            Some(focus) => {
+                self.advise_edit(focus);
+                // Beacon: we are the active input method here — tell the broker so
+                // the MVP keystroke path stands down before the first word.
+                notify_broker_active();
+            }
             None => self.unadvise_edit(),
-        }
+        });
         Ok(())
     }
     fn OnPushContext(&self, _context: Option<&ITfContext>) -> Result<()> {
@@ -503,6 +510,12 @@ fn ask_broker(token: &str, boundary: Boundary) -> Option<String> {
         Ok(Response::Replace { replacement }) => Some(replacement),
         _ => None,
     }
+}
+
+/// Tell the broker the adapter is now handling the foreground (a focus beacon), so
+/// the MVP keystroke path defers there *before* the first word is typed. Fail-open.
+fn notify_broker_active() {
+    let _ = langcheck_ipc::request(&Request::Active);
 }
 
 /// Diagnostic export: verify the adapter can reach the broker over same-user IPC.
